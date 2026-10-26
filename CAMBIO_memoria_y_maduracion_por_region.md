@@ -80,3 +80,22 @@ Lleva una fila por región, el TOTAL de cada región del primer nivel y el TOTAL
 - **Comprobación 4 del 8.6:** el TOTAL de la tabla es el TOTAL del año en `sff_forecast_total` (paso 7.3). En el parecido al real, 2026 = 18.994.045 $ reales + 7.453.292 $ esperados = 26.447.337 $.
 - **Los niveles de región** son el primero y el último de `ts_region_columns`.
 - **Tests:** `test_report_queries` compara cada subtotal con el núcleo sumado en pandas; `test_2_5_8_6_dynamics_report` comprueba que cada región suma su subtotal y el TOTAL, y que real + esperado = el año.
+
+## 4 · El valor por unidad del universo time series (paso 6.1)
+
+En la ejecución real el valor por unidad llevaba 20 meses cayendo, de 30 $ a unos 17 $ en 2026-09. La proyección lo tomaba de la media de los últimos 12 meses (unos 22,5 $), así que el dinero saltaba de unos 500 k$ a unos 650-700 k$ en octubre sin que subieran las unidades, y 2027 heredaba ese valor.
+
+- **La ventana del valor por unidad la elige el examen**, junto con la regla del nivel. Los candidatos son cada regla × cada ventana de `ts_auv_window_candidates` (1, 3 y 12 meses), y simula el de menor error medio del total del mes. `ts_auv_window_months` fija una ventana.
+- **`sff_ts_examen`** pasa a ser candidato × horizonte, con las columnas `candidato`, `regla_nivel` y `ventana_valor_medio`.
+- **En pantalla, el 6.1 enseña el valor por unidad por región del primer nivel** en cuatro ventanas: último mes, últimos 3, últimos 12 y los mismos 3 de hace un año. Añade el cambio anual y una línea que separa el cambio del total en **precio dentro de las regiones** y **mezcla de regiones** (1 + total = (1 + precio) × (1 + mezcla)).
+- **Una región que no vendió nada en una ventana corta** toma el valor por unidad del total, en vez de quedarse sin valor.
+- **En el parecido al real** el examen elige `sin_nivel` con 3 meses (error medio 40,7 %, frente a 41,6 % con 12). El forecast cambia poco: 2026 da 26.475.182 $ y 2027 da 25.843.241 $. Con la caída del dato real, la ventana corta debería ganar con más claridad.
+- **Test:** con un valor por unidad que cae un 2 % al mes, el examen elige 1 mes, y el error crece con la ventana (1 < 3 < 12).
+
+## 5 · La consola: solo avisos, todo en el fichero
+
+Con el extracto real, el navegador se quedó sin memoria mostrando la salida: unas 2.000 líneas y un centenar de tablas.
+
+- **Nuevo `console_log_level`** en la Config. Con `"WARNING"` y un `log_file`, la consola (el notebook) solo enseña avisos, fallos y la tabla final; el fichero guarda todas las líneas y todas las tablas.
+- **La Config de producción de `main.py`** ya lo trae: `log_file = salida/sff_ejecucion.log` y `console_log_level = "WARNING"`. Con `console_log_level=None` se vuelve a ver todo.
+- **Test:** en `test_1_1_validate_raw`, la consola queda vacía con un paso limpio y el fichero tiene cada línea y cada tabla.

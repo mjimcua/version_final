@@ -77,18 +77,25 @@ class CurrentStdoutHandler(logging.StreamHandler):
 
 class LoggerManager:
 
-    def __init__(self, log_level, use_colors: bool = True, log_file: Optional[str] = None):
+    def __init__(self, log_level, use_colors: bool = True, log_file: Optional[str] = None,
+                 console_level: Optional[str] = None):
         assert log_level in VALID_LOG_LEVELS, \
             "Incorrect Level. See https://docs.python.org/3/library/logging.html#levels"
+        assert console_level is None or console_level in VALID_LOG_LEVELS, \
+            "Incorrect console level. See https://docs.python.org/3/library/logging.html#levels"
         self.log_level = log_level
         self.use_colors = use_colors
         self.log_file = log_file
+        self.console_level = console_level      # None: the console shows what the log shows
 
     def get_logger_configured(self, logger_name: Optional[str] = None) -> logging.Logger:
         console_formatter = ColoredFormatter(LOG_FORMAT, style="{", datefmt=LOG_DATE_FORMAT,
                                              colors=LEVEL_COLORS if self.use_colors else None)
         console_handler = CurrentStdoutHandler()
         console_handler.setFormatter(console_formatter)
+        # the console may show less than the file: with console_level WARNING a notebook only shows warnings and
+        # failures, and the file keeps every line (the logger itself lets through what the file needs)
+        console_handler.setLevel(self.console_level or self.log_level)
 
         logger = logging.getLogger(logger_name)
         logger.handlers[:] = []

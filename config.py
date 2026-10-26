@@ -701,7 +701,11 @@ class Config:
                                               # the normal pipeline (its rate is read there)
     ts_level_window_months: int = 3           # [1.2 6.1] the level: the last 3 closed months of this year vs the same months of last
                                               # year (recent enough to follow the campaigns, long enough not to be one month)
-    ts_auv_window_months: int = 12            # [6.1] the value per unit: Σ value / Σ units of the last 12 closed months (a year)
+    ts_auv_window_months: Optional[int] = None   # [CFG 6.1] the value per unit: Σ value / Σ units of the last N closed months.
+                                              # None = the exam chooses N among ts_auv_window_candidates, with the level rule
+                                              # (until 26-oct-2026: 12 fixed. In the real run the value per unit fell 20
+                                              # months in a row, $30 → $17, and the 12-month mean put the projection at $22.5)
+    ts_auv_window_candidates: list = field(default_factory=lambda: [1, 3, 12])   # [CFG 6.1] the windows the exam compares
     ts_rate_window_months: int = 12           # [6.1] the renewal rate of the region in the normal pipeline: last 12 closed months
     ts_acquisition_discount: float = 0.4      # [CFG 6.1] retail-to-subscription offers: acquired at 40 % off, renewed at 100 %
     ts_next_year_level: Optional[float] = 1.0    # [1.2 6.1] the level of next year's simulation: units of a month = the same month
@@ -854,7 +858,11 @@ class Config:
     # ─── the log (configured once, when the Config is built) ────────────────────────
     log_level: str = "INFO"               # [CFG] DEBUG · INFO · WARNING · ERROR
     log_colors: bool = True               # [CFG] colours on the console (off in tests)
-    log_file: Optional[str] = None        # [CFG] also write the log to this file, without colours
+    log_file: Optional[str] = None        # [CFG] also write the log to this file, without colours (and every table shown)
+    console_log_level: Optional[str] = None   # [CFG] what the console shows; None = log_level. "WARNING" with a log_file:
+                                          # the notebook shows only warnings and failures, the file keeps everything,
+                                          # tables included (a full run is ~2,000 lines and ~100 tables: too much for a
+                                          # browser with a real extract, 26-oct-2026)
 
     # ═══════════════════════════════════════════════════════════════════════════════
     # THE RAW SOURCE
@@ -872,7 +880,8 @@ class Config:
         """The logger is configured, and a misdeclared Config stops here, before any data is read."""
         # [0] the log: one configuration for the whole run; the count of the checks of every
         #     step is kept for the report
-        LoggerManager(self.log_level, use_colors=self.log_colors, log_file=self.log_file).get_logger_configured(LOGGER_NAME)
+        LoggerManager(self.log_level, use_colors=self.log_colors, log_file=self.log_file,
+                      console_level=self.console_log_level).get_logger_configured(LOGGER_NAME)
         self.check_history = []
         # every table this run wrote, by name (the frame as the step had it): step 8.4 checks the relations of the
         # model of Power BI on them
@@ -948,6 +957,10 @@ class Config:
                 raise ValueError(f"{discount_name} must be in [0, 1) (found {getattr(self, discount_name)})")
         if not (0 <= float(self.ts_acquisition_discount) < 1):
             raise ValueError(f"ts_acquisition_discount must be in [0, 1) (found {self.ts_acquisition_discount})")
+        auv_windows = [self.ts_auv_window_months] if self.ts_auv_window_months is not None else list(self.ts_auv_window_candidates)
+        if not auv_windows or any(int(window) < 1 for window in auv_windows):
+            raise ValueError(f"the value-per-unit windows of the time_series universe must be at least 1 month "
+                             f"(ts_auv_window_months {self.ts_auv_window_months}, candidates {self.ts_auv_window_candidates})")
         if self.ts_level_rule is not None and self.ts_level_rule not in TS_LEVEL_RULES:
             raise ValueError(f"ts_level_rule must be None or one of {list(TS_LEVEL_RULES)} (found {self.ts_level_rule})")
         if int(self.test_months) < 1:
@@ -1076,22 +1089,42 @@ class Config:
         """The SQL that reproduces an aggregated report from the tables the run writes (report_queries.py)."""
         self.logger.doc(f"[{step_label}] {what}: the SQL that reproduces it from the tables of the run:\n{sql}")
 
-    def show_table(self, table: pd.DataFrame) -> None:
+    def show_table(self, table: pd.DataFrame, always: bool = False) -> None:
         """Concrete rows (examples) as a pandas table, never through the logger: rendered
         with display() in a notebook, printed aligned (to_string) in a terminal. The log
         line that introduces the table says how many rows follow."""
         sys.stdout.flush()      # the log lines already written come before the table
         shown_table = table.reset_index(drop=True)
+        self.write_to_the_log_file(shown_table.to_string())
+        if not (self.console_shows_the_documentation or always):     # always: the final table of the run
+            return
         if running_in_notebook():
             from IPython.display import display
             display(shown_table)
         else:
             print(shown_table.to_string())
 
+    @property
+    def console_shows_the_documentation(self) -> bool:
+        """True when the console shows the DOC lines (and so the tables and charts that go with them)."""
+        console_level = self.console_log_level or self.log_level
+        return logging.getLevelName(console_level) <= DOC_LEVEL
+
+    def write_to_the_log_file(self, text: str) -> None:
+        """A table into the log file, next to the line that introduces it (the console may not show it)."""
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.FileHandler):
+                handler.acquire()
+                try:
+                    handler.stream.write(text + "\n")
+                    handler.flush()
+                finally:
+                    handler.release()
+
     def show_figure(self, step_label: str, what: str, path: str) -> None:
         """A chart of the run: the log line says what it is and where the PNG is; in a notebook it is shown too."""
         self.logger.doc(f"[{step_label}] chart: {what} → {path}")
-        if running_in_notebook():
+        if running_in_notebook() and self.console_shows_the_documentation:
             from IPython.display import Image, display
             sys.stdout.flush()
             display(Image(filename=path))
@@ -1401,6 +1434,9 @@ def what_the_configuration_implies(configuration: "Config") -> list:
                            "the price by state is applied"))
     lines.append((section, "the level rule of the time_series universe" if configuration.ts_level_rule is None
                            else f"(not) the level rule of the time_series universe: fixed to '{configuration.ts_level_rule}'"))
+    lines.append((section, f"the window of its value per unit, among the last {configuration.ts_auv_window_candidates} closed months"
+                           if configuration.ts_auv_window_months is None
+                           else f"(not) the window of its value per unit: fixed to {configuration.ts_auv_window_months} months"))
     return lines
 
 

@@ -25,6 +25,8 @@ from config import Config
 SQL_SERVER = "..."                          # [por completar]
 SQL_DATABASE = "..."                        # [por completar]
 SQL_DRIVER = "ODBC Driver 17 for SQL Server"
+PRODUCTION_OUTPUT_FOLDER = "salida"
+PRODUCTION_LOG_FILE = os.path.join(PRODUCTION_OUTPUT_FOLDER, "sff_ejecucion.log")
 RAW_EXTRACT_QUERY = "SELECT * FROM ..."     # [por completar] the query of the raw extract
 SYNTHETIC_KEYWORD = "sintetico"
 SYNTHETIC_OUTPUT_FOLDER = "salida"
@@ -69,9 +71,15 @@ def production_configuration() -> Config:
     """The production extract (Kamelot), with the Config of the real run of 19-oct-2026: the same columns and
     choices as like_real_configuration, which reproduces it. Names marked [por confirmar] must be checked
     against the extract: step 1.1 names every column that is missing or has no role, and stops."""
+    os.makedirs(PRODUCTION_OUTPUT_FOLDER, exist_ok=True)          # the log file, the report and the charts go there
     return ProductionConfig(
         # where the raw is read from and the tables are written to
         sql_engine=production_engine(),
+        # the log: every line and every table to the file; the console (the notebook) only warnings, failures and
+        # the final table. A full run with the real extract is ~2,000 lines and ~100 tables: rendered in the browser,
+        # it ran out of memory (26-oct-2026). console_log_level=None shows everything again
+        log_file=PRODUCTION_LOG_FILE,
+        console_log_level="WARNING",
         sql_schema="dbo",
         raw_extract_sql=RAW_EXTRACT_QUERY,
         # the calendar

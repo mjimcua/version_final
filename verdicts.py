@@ -604,11 +604,12 @@ def verdict_of_time_series(tables: dict, configuration: Config) -> list:
         return rows
     by_rule = universe.exam.get("by_rule")
     if by_rule is not None and len(by_rule):
-        means = by_rule.groupby("regla_nivel", sort=False)["error_medio_regla"].first()
-        chosen = universe.level_rule
-        others = " · ".join(f"{rule} {percent(error, 0)}" for rule, error in means.items() if rule != chosen)
+        means = by_rule.groupby("candidato", sort=False)["error_medio_regla"].first().sort_values()
+        chosen = universe.exam["candidate"]
+        others = " · ".join(f"{rule} {percent(error, 0)}" for rule, error in means.head(4).items() if rule != chosen)
         error = float(means.get(chosen, np.nan))
-        rows.append(verdict_row(block, "6.1", KIND_EXAM, "¿Qué regla del nivel simula mejor el universo time series, y cuánto falla?",
+        rows.append(verdict_row(block, "6.1", KIND_EXAM, "¿Qué regla del nivel y qué ventana del valor por unidad simulan mejor el "
+                                "universo time series, y cuánto falla?",
                                 "error medio del revenue total de un mes en el examen (6 orígenes)", f"{chosen} {percent(error, 0)}",
                                 others or "—", VERDICT_HOLDS if error <= configuration.verdict_time_series_error else VERDICT_WARNING,
                                 "un error alto hace ancha su banda: el universo pesa poco en dinero y mucho en la banda "

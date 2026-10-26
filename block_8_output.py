@@ -2083,13 +2083,15 @@ def show_the_year_by_region(year_by_region, configuration: Config) -> None:
     year = configuration.calendar_boundaries()["current"].year
     last_closed = configuration.calendar_boundaries()["current"] - 1
     columns = year_by_region_columns(configuration)
-    configuration.log_action(STEP_8_6_LABEL, 8, f"THE YEAR {year} BY {' AND '.join(columns)}: renewed USD, real up to "
-                                                f"{last_closed} and expected from {last_closed + 1} to {year}-12 "
-                                                f"(each region, its TOTAL, and the TOTAL of the year)")
+    heading = (f"THE YEAR {year} BY {' AND '.join(columns)}: renewed USD, real up to {last_closed} and expected from "
+               f"{last_closed + 1} to {year}-12 (each region, its TOTAL, and the TOTAL of the year)")
+    configuration.log_action(STEP_8_6_LABEL, 8, heading)
+    if not configuration.console_shows_the_documentation:          # a quiet console still gets the final table
+        print(f"[{STEP_8_6_LABEL}] {heading}")
     shown = year_by_region.drop(columns=["orden_total", "orden_region"]).copy()
     for column_name in ["usd_real_hasta_hoy", "usd_esperado_hasta_fin_de_ano", "usd_total_ano"]:
         shown[column_name] = shown[column_name].map(lambda value: f"{value:,.0f}")
-    configuration.show_table(shown)
+    configuration.show_table(shown, always=True)
     configuration.show_query(STEP_8_6_LABEL, f"the year {year} by region", year_by_region.attrs["sql"])
 
 
@@ -2619,13 +2621,15 @@ def chapter_time_series(results: dict, configuration: Config) -> str:
     by_rule = universe.exam["by_rule"]
     if len(by_rule):
         shown = (by_rule.assign(error_pct=100 * by_rule["error_usd"])
-                 .pivot_table(index="regla_nivel", columns="h", values="error_pct", sort=False).round(1))
+                 .pivot_table(index="candidato", columns="h", values="error_pct", sort=False).round(1))
         shown.columns = [f"h{int(h)}" for h in shown.columns]
-        shown["media"] = (100 * by_rule.groupby("regla_nivel", sort=False)["error_medio_regla"].first()).round(1)
+        shown["media"] = (100 * by_rule.groupby("candidato", sort=False)["error_medio_regla"].first()).round(1)
+        shown = shown.sort_values("media")
         lines += ["El universo solo trae su resultado (lo que convirtió): se predice con su propia serie, el mismo mes del año "
-                  "anterior × el nivel de la región. **La regla del nivel la elige el examen**: en cada uno de los últimos "
+                  "anterior × el nivel de la región, valorado al valor por unidad de sus últimos meses. **La regla del nivel "
+                  "y la ventana del valor por unidad las elige el examen**: en cada uno de los últimos "
                   f"{configuration.ts_exam_origins} meses cerrados se simula con los meses anteriores y se compara el revenue "
-                  f"total del mes con lo que convirtió; simula la de menor error medio, **{universe.level_rule}**, y su error "
+                  f"total del mes con lo que convirtió; simula el candidato de menor error medio, **{universe.exam['candidate']}**, y su error "
                   "a cada horizonte es la banda de sus filas (error en %; detalle en `sff_ts_examen`):", "",
                   markdown_table(shown.reset_index(), 1)]
     time_series = results.get("time_series")

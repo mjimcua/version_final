@@ -20,6 +20,8 @@ Una horizontal, el bloque 1 (1.1–1.7), prepara el dato una vez. Después cinco
 
 **Al empezar** (líneas `[ORQ]`, desde el 26-oct) la ejecución no lista los parámetros: dice lo que implica la Config. Son los meses de cada rol y lo que ve cada horizonte del examen, desde qué mes se borra la pipeline de 1 año, de qué dims está hecha cada cosa, qué estados tienen curva y qué elige el examen. Los valores están en `sff_parametros` (8.4).
 
+**La consola** (desde el 26-oct): con `console_log_level = "WARNING"` y un `log_file`, el notebook solo enseña avisos, fallos y la tabla final, y el fichero guarda todas las líneas y tablas. Es lo que trae la Config de producción: con el extracto real, la salida completa dejaba al navegador sin memoria.
+
 ## Bloque 1 · Preparación (pasos 1.1 a 1.7)
 
 **Misión:** dejar el extracto verificado y en las tablas de las que parte toda predicción. No predice nada.
@@ -497,7 +499,7 @@ Construye las filas que vencerán 12 meses después de la ventana de simulación
 
 **Misión:** lo que el universo de retail a suscripción trae todavía este año, el año siguiente entero y la pipeline del año siguiente que genera, por regiones y con banda.
 
-**Mecanismo:** el universo solo trae su resultado (lo que convirtió), así que se predice con su propia serie: el mismo mes del año anterior × el nivel de la región, con la regla del nivel que mejor simuló los meses cerrados (el examen compara cuatro sobre los mismos orígenes); el año siguiente repite este por defecto; lo proyectado este año vence el siguiente como pipeline (40 % de descuento, renueva al 100 %, a la tasa de su región); la simulación se examina en los meses cerrados y su error por horizonte es la banda de cada fila. Menos ciencia que los bloques 2 a 5, a propósito: una pieza que encaja con el resto y se mejora sola.
+**Mecanismo:** el universo solo trae su resultado (lo que convirtió), así que se predice con su propia serie: el mismo mes del año anterior × el nivel de la región, valorado al valor por unidad de sus últimos meses; la regla del nivel y la ventana del valor por unidad son las que mejor simularon los meses cerrados (el examen compara 4 reglas × 3 ventanas sobre los mismos orígenes); el año siguiente repite este por defecto; lo proyectado este año vence el siguiente como pipeline (40 % de descuento, renueva al 100 %, a la tasa de su región); la simulación se examina en los meses cerrados y su error por horizonte es la banda de cada fila. Menos ciencia que los bloques 2 a 5, a propósito: una pieza que encaja con el resto y se mejora sola.
 
 **Lee:** `time_series_rows`, `fine_table` (bloque 1). · **Entrega:** `time_series_universe`.
 
@@ -506,13 +508,13 @@ Construye las filas que vencerán 12 meses después de la ventana de simulación
 Simula, por regiones, el revenue de retail a suscripción que el extracto aún no tiene: lo que queda del año, el año siguiente entero y la pipeline del año siguiente que crea (la reentrada de lo proyectado), con una banda que sale del examen de la simulación en los meses cerrados.
 
 - **Entra:** `time_series_rows` (1.2) y `fine_table` (1.4: la tasa de cada región en la pipeline normal, para la reentrada).
-- **Sale:** `time_series_universe`: la caja, con sus filas región × mes (`ts_real`, `ts_proyectado`, `ts_simulado`, `ts_reentrada`, cada una con su banda), la regla del nivel elegida y el examen de su simulación. Escribe `sff_ts_examen` (regla del nivel × horizonte: error del total simulado y regla elegida); sus filas llegan al núcleo (8.3) y al total (7.3); el gráfico `ts_6_1_prediccion` sale en pantalla.
+- **Sale:** `time_series_universe`: la caja, con sus filas región × mes (`ts_real`, `ts_proyectado`, `ts_simulado`, `ts_reentrada`, cada una con su banda), la regla del nivel y la ventana del valor por unidad elegidas y el examen de su simulación. Escribe `sff_ts_examen` (candidato — regla del nivel × ventana del valor por unidad — × horizonte: error del total simulado y candidato elegido); sus filas llegan al núcleo (8.3) y al total (7.3); el gráfico `ts_6_1_prediccion` sale en pantalla.
 - **Depende de:** 1.2 (las filas time series) y 1.4 (la tasa de las regiones).
 - **Acciones:**
   1. Las filas time series por región y mes.
   2. Este año: el nivel (con la regla elegida) y el valor por unidad de cada región, y los meses proyectados (por cuota del total donde una región no se puede proyectar).
   3. El año siguiente: los meses simulados (mismo mes de este año × `ts_next_year_level`, 1,0 por defecto) y la reentrada de lo proyectado (valor / (1 − 0,4) × tasa de la región).
-  4. El examen de la simulación en los 6 últimos meses cerrados, con cada regla del nivel (`region`: el de la región; `credibilidad`: el de la región movido hacia el del total; `total`; `sin_nivel`: el mismo mes del año anterior tal cual). Simula la de menor error medio (`ts_level_rule` fija una) y su error por horizonte es la banda de cada fila.
+  4. El examen de la simulación en los 6 últimos meses cerrados, con cada regla del nivel (`region`: el de la región; `credibilidad`: el de la región movido hacia el del total; `total`; `sin_nivel`: el mismo mes del año anterior tal cual), combinada con cada ventana del valor por unidad (1, 3 y 12 meses). Simula el candidato de menor error medio (`ts_level_rule` y ts\_auv\_window\_months fijan una parte) y su error por horizonte es la banda de cada fila. Desde el 26-oct, porque con el valor por unidad cayendo la media de 12 meses hacía saltar la proyección. En pantalla sale también el valor por unidad por región (último mes, 3 y 12 meses, hace un año) y si su cambio es precio dentro de las regiones o mezcla de regiones.
   5. Comprueba el universo.
   6. Escribe el examen de la simulación.
   7. Cuenta las comprobaciones y para si alguna falla.

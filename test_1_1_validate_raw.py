@@ -80,6 +80,13 @@ def test_the_log() -> None:
     ok_line = next(line for line in console.splitlines() if " 1. ok" in line)
     check(title_line.startswith(blue) and purpose_line.startswith(blue) and ok_line.startswith(green),
           "colours: title and purpose blue (DOC), a passed check green (INFO)")
+    quiet_file = os.path.join(tempfile.mkdtemp(), "sff_quiet.log")
+    quiet = synthetic_with(log_file=quiet_file, console_log_level="WARNING")
+    console = console_of(lambda: validate_raw(quiet.read_raw(), quiet))
+    written = open(quiet_file, encoding="utf-8").read()
+    check("STEP 1.1" not in console and "entrenamiento" not in console
+          and "STEP 1.1" in written and "1. ok" in written and "unidades_vencen" in written,
+          "console_log_level WARNING: the console shows nothing of a clean step; the file keeps every line and every table")
     synthetic_with()    # leave the log as the other tests expect it
 
 

@@ -121,16 +121,44 @@ def test_the_level_rules() -> None:
           "z = 300 / (300 + the mean of the regions, 600) · sin_nivel = 1")
     exam = examine_the_simulation(two, configuration)
     table = exam["by_rule"]
-    mean_error = table.groupby("regla_nivel")["error_medio_regla"].first()
+    # the value per unit is 10 in every month: every window of it gives the same, so the rule decides
+    mean_error = table[table["ventana_valor_medio"] == 12].groupby("regla_nivel")["error_medio_regla"].first()
     check(set(table["regla_nivel"]) == {"region", "credibilidad", "total", "sin_nivel"}
-          and table.groupby("regla_nivel")["elegida"].first().sum() == 1
+          and set(table["ventana_valor_medio"]) == {1, 3, 12}
+          and table.groupby("candidato")["elegida"].first().sum() == 1
           and exam["rule"] == "region" and abs(mean_error["region"]) < 1e-12 and abs(mean_error["total"]) < 1e-12
           and mean_error["credibilidad"] > 0 and mean_error["sin_nivel"] > 0,
           "every rule is examined on the same origins; the exam judges the TOTAL of a month: A grows 10 % and C 0 %, so "
           "the region's own levels and the total's (1.025 on 400 units = 410) are both exact; credibilidad and sin_nivel "
-          "are not; the tie goes to the first rule (region), one rule chosen")
+          "are not; the tie goes to the first rule (region); every rule with every window (1, 3, 12), one candidate chosen")
     check(exam["by_horizon"]["error_usd"].abs().max() < 1e-12,
           "the band is the error of the rule chosen (0 here)")
+
+
+def test_the_window_of_the_value_per_unit() -> None:
+    print("B3 · the window of the value per unit, chosen by the exam with the level rule")
+    configuration = synthetic_with(ts_region_columns=["region"], ts_exam_origins=6)
+    current = pd.Period("2026-09", freq="M")
+    # region A: 100 units every month, the value per unit falls 2 % a month (30 $ in 2025-01): the level is 1 for every
+    # rule, the value per unit decides; the longer its window, the further behind the falling price it is
+    months = list(pd.period_range("2025-01", "2026-08", freq="M"))
+    rows = [{"period": month, REGION_KEY: "A", "region": "A", "unidades": 100.0, "valor": 100.0 * 30.0 * 0.98 ** step}
+            for step, month in enumerate(months)]
+    falling = pd.DataFrame(rows)
+    exam = examine_the_simulation(falling, configuration)
+    table = exam["by_rule"]
+    by_window = table[table["regla_nivel"] == exam["rule"]].groupby("ventana_valor_medio")["error_medio_regla"].first()
+    check(exam["auv_window"] == 1 and by_window[1] < by_window[3] < by_window[12],
+          "a value per unit falling every month: the last month errs least, then 3, then 12; the exam takes 1")
+    last_price = 30.0 * 0.98 ** (len(months) - 1)
+    parameters = region_parameters(falling, current, configuration, "sin_nivel", 1)
+    year_mean = falling[falling["period"] >= current - 12]["valor"].sum() / falling[falling["period"] >= current - 12]["unidades"].sum()
+    check(abs(parameters.loc["A", "valor_medio"] - last_price) < 1e-9
+          and abs(region_parameters(falling, current, configuration, "sin_nivel", 12).loc["A", "valor_medio"] - year_mean) < 1e-9,
+          f"window 1 = the price of the last month ({last_price:.2f} $); window 12 = the mean of the year ({year_mean:.2f} $)")
+    fixed = examine_the_simulation(falling, synthetic_with(ts_region_columns=["region"], ts_exam_origins=6, ts_auv_window_months=12))
+    check(set(fixed["by_rule"]["ventana_valor_medio"]) == {12} and fixed["auv_window"] == 12,
+          "ts_auv_window_months fixes the window: only it is examined")
 
 
 def test_the_step() -> None:
@@ -220,5 +248,6 @@ if __name__ == "__main__":
     test_the_rules()
     test_the_exam()
     test_the_level_rules()
+    test_the_window_of_the_value_per_unit()
     test_the_step()
     finish()

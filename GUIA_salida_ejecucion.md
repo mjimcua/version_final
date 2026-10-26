@@ -48,6 +48,10 @@ revisa la salida.
 > su suma, con el TOTAL de cada región y del año. Sale de una consulta sobre `sff_nucleo`, que se imprime debajo. La
 > comprobación 4 del 8.6 dice que su TOTAL es el del año en `sff_forecast_total`.
 
+> **Desde el 26-oct-2026: la consola puede ir en silencio.** Con `console_log_level = "WARNING"` y `log_file`, el
+> notebook solo enseña avisos, fallos y la tabla final; esta guía se lee entonces en el fichero del log, que guarda
+> todas las líneas y todas las tablas. La Config de producción de `main.py` viene así (`salida/sff_ejecucion.log`).
+
 ---
 
 ## Paso 1.1 · Validar el raw

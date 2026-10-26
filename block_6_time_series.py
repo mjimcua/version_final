@@ -58,7 +58,10 @@ from time_series_charts import draw_the_prediction_of_the_time_series, draw_with
 #                        level = the rule the exam chose (TS_LEVEL_RULES, config.py): the region's own (Σ units of the
 #                                last ts_level_window_months closed months / Σ the same months a year before), the
 #                                region's moved towards the total's by credibility, the total's, or none (1)
-#                        value = units × value per unit of the region (last ts_auv_window_months closed months)
+#                        value = units × value per unit of the region: Σ value / Σ units of its last N closed months,
+#                                N the window the exam chose with the level rule (ts_auv_window_candidates: 1, 3, 12;
+#                                ts_auv_window_months fixes one). Since 26-oct-2026; before, 12 fixed: with a value per
+#                                unit falling month after month, the mean of a year lagged it and the projection jumped
 #   · ts_simulado     the WHOLE of next year, month by month, with the same rule on this year's months (real where they
 #                     are closed, projected where they are not): units = units of the same month this year ×
 #                     ts_next_year_level (1.0 by default: next year repeats this one, the campaigns in their month;
@@ -77,7 +80,8 @@ from time_series_charts import draw_the_prediction_of_the_time_series, draw_with
 #   the simulation is examined on the last ts_exam_origins closed months: at every origin the level and the value per
 #   unit are taken with the months before it only, the months from the origin to the last closed one are simulated, and
 #   the error of the TOTAL revenue of a month is measured at every horizon h (months after the last month known). Every
-#   level rule is examined on the same origins; the one with the least mean error simulates (ts_level_rule fixes one),
+#   CANDIDATE (level rule × window of the value per unit) is examined on the same origins; the one with the least mean
+#   error simulates (ts_level_rule and ts_auv_window_months fix one part),
 #   and its error is the band — chosen and measured on the same months, so the band is somewhat optimistic. A row
 #   takes error(h) × its revenue as its half band (beyond the last horizon examined, the last one: a lower bound); a
 #   month more than 12 months ahead is simulated on a month that was simulated itself, so it adds that month's error in
@@ -146,12 +150,14 @@ class TimeSeriesUniverse:
             self.levels_of_region = pd.DataFrame(columns=self.region_columns)
         self.closed_monthly = self.monthly[self.monthly[period] < self.current]
 
-        # the exam of the simulation, every level rule on the same origins: the rule chosen simulates, its error is the band
+        # the exam of the simulation, every candidate (level rule × window of the value per unit) on the same origins:
+        # the one chosen simulates, its error is the band
         self.exam = examine_the_simulation(self.closed_monthly, configuration)
         self.level_rule = self.exam["rule"]
+        self.auv_window = self.exam["auv_window"]
 
         # this year: real and projected; next year: simulated; the re-entry of the projected months
-        self.parameters = region_parameters(self.closed_monthly, self.current, configuration, self.level_rule)
+        self.parameters = region_parameters(self.closed_monthly, self.current, configuration, self.level_rule, self.auv_window)
         window = [month for month in configuration.simulation_window if month.year == self.current.year]
         self.projected, self.fallback_regions = project_months(self.closed_monthly, self.parameters, window, configuration)
         real = self.closed_monthly[self.closed_monthly[period].map(lambda month: month.year) == self.current.year]
@@ -176,7 +182,7 @@ class TimeSeriesUniverse:
     # ─── the table ───────────────────────────────────────────────────────────────
     def assemble_the_table(self) -> pd.DataFrame:
         """Every row of the universe (real, projected, simulated, re-entry) with its revenue, its band and its region."""
-        configuration, period = self.configuration, self.configuration.period_col
+        period = self.configuration.period_col
         frames = []
         if len(self.real):
             frames.append(self.real.assign(revenue=self.real["valor"]))
@@ -245,10 +251,12 @@ class TimeSeriesUniverse:
 # THE RULES: level and value per unit, the projection, the rate of the re-entry
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def region_parameters(closed_monthly: pd.DataFrame, as_of, configuration: Config, rule: str = "region") -> pd.DataFrame:
+def region_parameters(closed_monthly: pd.DataFrame, as_of, configuration: Config, rule: str = "region",
+                      auv_window_months: int = None) -> pd.DataFrame:
     """Per region, with the months before as_of only: level (last ts_level_window_months vs the same months a year
-    before; only the months whose year before is inside the history), value per unit (last ts_auv_window_months), share
-    of units (same window) and the range of its monthly value per unit.
+    before; only the months whose year before is inside the history), value per unit (last auv_window_months closed
+    months: the window the exam chose; None = the largest candidate), share of units (same window) and the range of
+    its monthly value per unit.
 
     The level by rule (TS_LEVEL_RULES): region = its own (nivel_region); credibilidad = z · its own + (1 − z) · the
     total's, z = units a year before / (units a year before + the mean of the regions); total = the total's; sin_nivel
@@ -261,7 +269,9 @@ def region_parameters(closed_monthly: pd.DataFrame, as_of, configuration: Config
     level_months = [month for month in pd.period_range(as_of - configuration.ts_level_window_months, as_of - 1, freq="M")
                     if month - MONTHS_PER_YEAR >= first_known]
     last_year_months = [month - MONTHS_PER_YEAR for month in level_months]
-    auv_window = known[known[period] >= as_of - configuration.ts_auv_window_months]
+    if auv_window_months is None:
+        auv_window_months = configuration.ts_auv_window_months or max(configuration.ts_auv_window_candidates)
+    auv_window = known[known[period] >= as_of - int(auv_window_months)]
     recent = known[known[period].isin(level_months)].groupby(region)["unidades"].sum()
     before = known[known[period].isin(last_year_months)].groupby(region)["unidades"].sum()
     grouped = auv_window.groupby(region)
@@ -291,6 +301,7 @@ def region_parameters(closed_monthly: pd.DataFrame, as_of, configuration: Config
     else:
         raise ValueError(f"unknown level rule {rule}: one of {list(TS_LEVEL_RULES)}")
     parameters.attrs["regla_nivel"] = rule
+    parameters.attrs["ventana_valor_medio"] = int(auv_window_months)
     parameters.attrs["total_nivel"] = total_level
     parameters.attrs["total_valor_medio"] = (float(auv_window["valor"].sum() / auv_window["unidades"].sum())
                                              if auv_window["unidades"].sum() > 0 else np.nan)
@@ -317,9 +328,10 @@ def project_months(base_monthly: pd.DataFrame, parameters: pd.DataFrame, months:
             if by_share:
                 fallback_regions.add(region_value)
                 units = total_units * region_parameters_row["cuota_unidades"]
-                auv = auv if np.isfinite(auv) else parameters.attrs["total_valor_medio"]
             else:
                 units = same_month * level
+            # a region that sold nothing in a short window has no value per unit of its own: the total's
+            auv = auv if np.isfinite(auv) else parameters.attrs["total_valor_medio"]
             if not np.isfinite(units):
                 continue
             rows.append({region: region_value, period: month, "origen": TS_PROJECTED, "unidades": float(units),
@@ -375,28 +387,45 @@ def reentry_rows(projected: pd.DataFrame, rates: dict, global_rate: float, confi
 # THE EXAM OF THE SIMULATION
 # ═══════════════════════════════════════════════════════════════════════════════════
 
+EXAM_COLUMNS = ["candidato", "regla_nivel", "ventana_valor_medio", "h", "meses", "error_usd", "error_medio_regla", "elegida"]
+
+
+def candidate_label(rule: str, auv_window_months: int) -> str:
+    """How a candidate of the exam is named on screen and in sff_ts_examen: 'sin_nivel · valor 3 m'."""
+    return f"{rule} · valor {int(auv_window_months)} m"
+
+
 def examine_the_simulation(closed_monthly: pd.DataFrame, configuration: Config) -> dict:
-    """Every level rule (TS_LEVEL_RULES; only ts_level_rule when it is fixed) examined on the same origins, and the
-    rule with the least mean error over the horizons chosen (a tie: the first in TS_LEVEL_RULES).
+    """Every candidate examined on the same origins: every level rule (TS_LEVEL_RULES; only ts_level_rule when it is
+    fixed) × every window of the value per unit (ts_auv_window_candidates; only ts_auv_window_months when it is fixed).
+    The candidate with the least mean error over the horizons simulates (a tie: the first rule, then the first window).
 
-    OUTPUT:  dict(rule: the rule chosen; by_rule: rule × h: months, mean |error|, chosen (1/0) — the table
-             sff_ts_examen; months, by_horizon and read_after_origin of the rule chosen, see exam_of_a_rule).
-    EDGE CASES: no closed month or fewer than a year of history → empty tables and the first rule (no band)."""
+    OUTPUT:  dict(rule and auv_window: the candidate chosen; candidate: its label; by_rule: candidate × h: rule, window,
+             months, mean |error|, mean error of the candidate, chosen (1/0) — the table sff_ts_examen; months,
+             by_horizon and read_after_origin of the candidate chosen, see exam_of_a_rule).
+    EDGE CASES: no closed month or fewer than a year of history → empty tables and the first candidate (no band)."""
     rules = [configuration.ts_level_rule] if configuration.ts_level_rule else list(TS_LEVEL_RULES)
-    exams = {rule: exam_of_a_rule(closed_monthly, configuration, rule) for rule in rules}
-    mean_error = {rule: float(exam["by_horizon"]["error_usd"].mean()) for rule, exam in exams.items()
+    windows = ([int(configuration.ts_auv_window_months)] if configuration.ts_auv_window_months is not None
+               else [int(window) for window in configuration.ts_auv_window_candidates])
+    candidates = [(rule, window) for rule in rules for window in windows]
+    exams = {candidate: exam_of_a_rule(closed_monthly, configuration, *candidate) for candidate in candidates}
+    mean_error = {candidate: float(exam["by_horizon"]["error_usd"].mean()) for candidate, exam in exams.items()
                   if len(exam["by_horizon"])}
-    chosen = min(mean_error, key=lambda rule: (mean_error[rule], rules.index(rule))) if mean_error else rules[0]
-    by_rule = pd.concat([exam["by_horizon"].assign(regla_nivel=rule, error_medio_regla=mean_error.get(rule, np.nan),
-                                                   elegida=int(rule == chosen))
-                         for rule, exam in exams.items()], ignore_index=True) if mean_error else \
-        pd.DataFrame(columns=["regla_nivel", "h", "meses", "error_usd", "error_medio_regla", "elegida"])
-    by_rule = by_rule.reindex(columns=["regla_nivel", "h", "meses", "error_usd", "error_medio_regla", "elegida"])
+    chosen = (min(mean_error, key=lambda candidate: (mean_error[candidate], candidates.index(candidate)))
+              if mean_error else candidates[0])
+    by_rule = pd.concat([exam["by_horizon"].assign(candidato=candidate_label(*candidate), regla_nivel=candidate[0],
+                                                   ventana_valor_medio=candidate[1],
+                                                   error_medio_regla=mean_error.get(candidate, np.nan),
+                                                   elegida=int(candidate == chosen))
+                         for candidate, exam in exams.items()], ignore_index=True) if mean_error else \
+        pd.DataFrame(columns=EXAM_COLUMNS)
+    by_rule = by_rule.reindex(columns=EXAM_COLUMNS)
     read_after_origin = sum(exam["read_after_origin"] for exam in exams.values())
-    return dict(exams[chosen], rule=chosen, by_rule=by_rule, read_after_origin=read_after_origin)
+    return dict(exams[chosen], rule=chosen[0], auv_window=chosen[1], candidate=candidate_label(*chosen), by_rule=by_rule,
+                read_after_origin=read_after_origin)
 
 
-def exam_of_a_rule(closed_monthly: pd.DataFrame, configuration: Config, rule: str) -> dict:
+def exam_of_a_rule(closed_monthly: pd.DataFrame, configuration: Config, rule: str, auv_window_months: int = None) -> dict:
     """At every origin o of the last ts_exam_origins closed months, the level rule with the months before o only
     simulates the months o … the last closed one; the error of the TOTAL revenue of every month against what converted.
 
@@ -415,7 +444,7 @@ def exam_of_a_rule(closed_monthly: pd.DataFrame, configuration: Config, rule: st
     for origin in origins:
         known = closed_monthly[closed_monthly[period] < origin]
         read_after_origin += int((known[period] >= origin).sum())
-        parameters = region_parameters(known, origin, configuration, rule)
+        parameters = region_parameters(known, origin, configuration, rule, auv_window_months)
         months = list(pd.period_range(origin, last_closed, freq="M"))
         simulated, _ = project_months(known, parameters, months, configuration)
         simulated_by_month = simulated.groupby(period)["valor"].sum() if len(simulated) else pd.Series(dtype=float)
@@ -447,7 +476,6 @@ def build_the_time_series_universe(time_series_rows: pd.DataFrame, fine_table: p
     configuration.log_step_start(STEP_6_1_LABEL, STEP_6_1_NAME, STEP_6_1_PURPOSE, STEP_6_1_ACTIONS, STEP_6_1_OUTPUT)
     check_log = []
     universe = TimeSeriesUniverse(time_series_rows, fine_table, configuration)
-    period = configuration.period_col
 
     # [1]-[4] what the box built
     configuration.log_action(STEP_6_1_LABEL, 1, f"{len(universe.monthly):,} region × month rows, "
@@ -465,10 +493,12 @@ def build_the_time_series_universe(time_series_rows: pd.DataFrame, fine_table: p
                                             f"${universe.reentry['valor'].sum() if len(universe.reentry) else 0:,.0f} of pipeline, "
                                             f"${universe.reentry['revenue'].sum() if len(universe.reentry) else 0:,.0f} expected")
     examined = universe.exam["by_rule"]
-    mean_by_rule = examined.groupby("regla_nivel", sort=False)["error_medio_regla"].first() if len(examined) else None
-    configuration.log_action(STEP_6_1_LABEL, 4, (f"level rule chosen: {universe.level_rule} · mean error of the "
-                                                 f"simulated total: " + " · ".join(
-        f"{rule} {error:.0%}" for rule, error in mean_by_rule.items())) if mean_by_rule is not None
+    mean_by_candidate = (examined.groupby("candidato", sort=False)["error_medio_regla"].first().sort_values()
+                         if len(examined) else None)
+    configuration.log_action(STEP_6_1_LABEL, 4, (f"chosen: level rule {universe.level_rule}, value per unit of the last "
+                                                 f"{universe.auv_window} closed months · mean error of the simulated total, "
+                                                 f"the best first: " + " · ".join(
+        f"{candidate} {error:.0%}" for candidate, error in mean_by_candidate.items())) if mean_by_candidate is not None
                              else "not enough closed months to examine the simulation: its rows go without a band")
 
     # [5] the checks
@@ -554,17 +584,19 @@ def show_the_universe(universe: TimeSeriesUniverse, step_label: str) -> None:
     if len(universe.exam["by_horizon"]):
         doc(f"[{step_label}] el examen de la simulación (en cada uno de los últimos {configuration.ts_exam_origins} meses "
             f"cerrados se simula con los meses anteriores y se compara el total del mes con lo que convirtió; h = meses "
-            f"tras el último conocido), con cada regla del nivel sobre los mismos orígenes: simula la de menor error "
-            f"medio, {universe.level_rule}, y su error de cada h es la media banda de las filas a ese horizonte")
+            f"tras el último conocido), con cada candidato (regla del nivel × ventana del valor por unidad) sobre los "
+            f"mismos orígenes: simula el de menor error medio, {universe.exam['candidate']}, y su error de cada h es la "
+            f"media banda de las filas a ese horizonte")
         by_rule = universe.exam["by_rule"]
         shown = (by_rule.assign(error_pct=100 * by_rule["error_usd"])
-                 .pivot_table(index="regla_nivel", columns="h", values="error_pct", sort=False).round(1))
+                 .pivot_table(index="candidato", columns="h", values="error_pct", sort=False).round(1))
         shown.columns = [f"h{int(h)}" for h in shown.columns]
-        shown["media"] = (100 * by_rule.groupby("regla_nivel", sort=False)["error_medio_regla"].first()).round(1)
-        shown["elegida"] = by_rule.groupby("regla_nivel", sort=False)["elegida"].first()
-        configuration.show_table(shown.reset_index())
+        shown["media"] = (100 * by_rule.groupby("candidato", sort=False)["error_medio_regla"].first()).round(1)
+        shown["elegida"] = by_rule.groupby("candidato", sort=False)["elegida"].first()
+        configuration.show_table(shown.sort_values("media").reset_index())
     else:
         doc(f"[{step_label}] AVISO: no hay meses cerrados suficientes para examinar la simulación: sus filas van sin banda")
+    show_the_value_per_unit(universe, step_label)
     if universe.fallback_regions:
         doc(f"[{step_label}] AVISO: {len(universe.fallback_regions)} regiones sin el mismo mes del año anterior o sin nivel "
             f"se proyectan por su cuota del total: {sorted(universe.fallback_regions)[:10]}")
@@ -577,6 +609,68 @@ def show_the_universe(universe: TimeSeriesUniverse, step_label: str) -> None:
                                       por_cuota=("por_cuota", "max"))
                                  .reset_index().sort_values("valor", ascending=False).head(configuration.top_regions_shown))
     doc(f"[{step_label}] ══════════ FIN DEL UNIVERSO TIME_SERIES ══════════")
+
+
+# ─── the value per unit by region: where its change comes from ──────────────────
+def value_per_unit_by_region(universe: TimeSeriesUniverse) -> tuple:
+    """The value per unit (Σ value / Σ units) of every region of the first level and of the total, over four windows
+    of closed months: the last one, the last 3, the last 12, and the same 3 a year before; and the change of the last 3
+    against a year before. Returns (the table, the split of the total's change into price and mix).
+
+    THE SPLIT of the change of the total (last 3 months against the same 3 a year before), at the first region level:
+      price  = the value per unit of today at the mix of a year before (Σ share of units a year before × value per unit
+               of today, region by region) over the value per unit of a year before − 1: what changed INSIDE the regions
+      mix    = the value per unit of today over that one − 1: what changed because the regions weigh differently
+      (1 + price) × (1 + mix) = 1 + the change of the total. The mix inside a region (its countries) counts as price here."""
+    period, last = universe.configuration.period_col, universe.last_closed
+    first_level = universe.region_columns[0]
+    monthly = universe.closed_monthly.join(universe.levels_of_region[[first_level]], on=REGION_KEY)
+    windows = {"ultimo_mes": (last, last), "ultimos_3": (last - 2, last), "ultimos_12": (last - 11, last),
+               "mismos_3_hace_un_ano": (last - 14, last - 12)}
+    columns, units_by_window = {}, {}
+    for name, (first_month, last_month) in windows.items():
+        in_window = monthly[(monthly[period] >= first_month) & (monthly[period] <= last_month)]
+        grouped = in_window.groupby(first_level)[["valor", "unidades"]].sum()
+        grouped.loc["TOTAL"] = in_window[["valor", "unidades"]].sum()
+        columns[name] = grouped["valor"] / grouped["unidades"].replace(0, np.nan)
+        units_by_window[name] = grouped["unidades"]
+    table = pd.DataFrame(columns)
+    table["cambio_anual_pct"] = 100 * (table["ultimos_3"] / table["mismos_3_hace_un_ano"] - 1)
+    table["cuota_unidades_ultimos_3_pct"] = 100 * units_by_window["ultimos_3"] / units_by_window["ultimos_3"].get("TOTAL", np.nan)
+    regions = table.drop(index="TOTAL")
+    share_a_year_before = units_by_window["mismos_3_hace_un_ano"].drop(index="TOTAL")
+    both = regions[["ultimos_3", "mismos_3_hace_un_ano"]].dropna().index
+    split = {}
+    if len(both) and share_a_year_before[both].sum() > 0:
+        weights = share_a_year_before[both] / share_a_year_before[both].sum()
+        today_at_old_mix = float((weights * regions.loc[both, "ultimos_3"]).sum())
+        before = float(table.loc["TOTAL", "mismos_3_hace_un_ano"])
+        today = float(table.loc["TOTAL", "ultimos_3"])
+        split = {"total_pct": 100 * (today / before - 1), "precio_pct": 100 * (today_at_old_mix / before - 1),
+                 "mezcla_pct": 100 * (today / today_at_old_mix - 1)}
+    return table.reset_index().rename(columns={"index": first_level}), split
+
+
+def show_the_value_per_unit(universe: TimeSeriesUniverse, step_label: str) -> None:
+    """On screen: the value per unit by region over the four windows, the window the exam chose, and the split of the
+    change of the total into price (inside the regions) and mix (the weight of every region)."""
+    configuration = universe.configuration
+    doc = configuration.logger.doc
+    if universe.closed_monthly.empty:
+        return
+    table, split = value_per_unit_by_region(universe)
+    doc(f"[{step_label}] el valor por unidad (Σ valor / Σ unidades) por {universe.region_columns[0]}, en meses cerrados "
+        f"hasta {universe.last_closed}; la proyección usa los últimos {universe.auv_window} (elegido por el examen):")
+    shown = table.copy()
+    for column_name in ["ultimo_mes", "ultimos_3", "ultimos_12", "mismos_3_hace_un_ano"]:
+        shown[column_name] = shown[column_name].round(2)
+    for column_name in ["cambio_anual_pct", "cuota_unidades_ultimos_3_pct"]:
+        shown[column_name] = shown[column_name].round(1)
+    configuration.show_table(shown)
+    if split:
+        doc(f"[{step_label}] de dónde viene el cambio del valor por unidad del total ({split['total_pct']:+.1f} % en los "
+            f"últimos 3 meses frente a los mismos de hace un año): precio dentro de las regiones {split['precio_pct']:+.1f} % "
+            f"· mezcla de regiones {split['mezcla_pct']:+.1f} % (la mezcla de países dentro de una región cuenta como precio)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════

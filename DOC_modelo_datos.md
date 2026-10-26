@@ -210,7 +210,7 @@ Power BI solo relacione y sume, sin lógica dentro del informe.
 | `sff_credibility` | referencia de credibilidad | `s2_3_credibility_ref_id` | soporte, tasa, k y sus partes |
 | `sff_credibility_members` | referencia × forecast serie | `credibility_ref_id` | qué series entran en la tasa de la referencia: `borrower` (se apoya en ella) o `lender` (solo aporta datos) |
 | `sff_series_dynamics` | forecast serie | `fs_id` | φ, tendencia y estacionalidad de la propia serie, y si son medibles |
-| `sff_ts_examen` (paso 6.1) | regla del nivel × horizonte | — (tabla suelta) | el examen de la simulación time series: error medio del total del mes a cada horizonte con cada regla del nivel (`region`, `credibilidad`, `total`, `sin_nivel`), su error medio y la regla elegida (`elegida = 1`), que es la que simula y da la banda |
+| `sff_ts_examen` (paso 6.1) | candidato (regla del nivel × ventana del valor por unidad) × horizonte | — (tabla suelta) | el examen de la simulación time series: error medio del total del mes a cada horizonte con cada candidato (`candidato`, `regla_nivel`: `region`, `credibilidad`, `total`, `sin_nivel`; `ventana_valor_medio`: 1, 3 o 12 meses), su error medio y el candidato elegido (`elegida = 1`), que es el que simula y da la banda. Desde el 26-oct-2026 la ventana del valor por unidad también la elige el examen (antes, 12 meses fijos) |
 
 ## El veredicto y el perfil de la ejecución (paso 8.6, desde el 25-oct-2026)
 

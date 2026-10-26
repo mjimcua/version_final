@@ -83,7 +83,8 @@ def draw_the_prediction_of_the_time_series(universe, step_label: str, configurat
     first_error = float(universe.exam["by_horizon"]["error_usd"].iloc[0]) if len(universe.exam["by_horizon"]) else np.nan
     next_level = configuration.ts_next_year_level
     subtitle = (f"Real hasta {universe.last_closed}; discontinuo: lo simulado (regla del nivel elegida por el examen: "
-                f"{universe.level_rule}; resto de {universe.current.year} y {universe.next_year} entero, nivel del año siguiente "
+                f"{universe.level_rule}, valor por unidad de los últimos {universe.auv_window} meses; resto de "
+                f"{universe.current.year} y {universe.next_year} entero, nivel del año siguiente "
                 f"{'el de la región' if next_level is None else f'{next_level:g}'}"
                 f"{' = repite este año' if next_level == 1 else ''}), con la banda del examen "
                 f"(error a 1 mes: {first_error:.0%}); punteado: la renovación esperada de la reentrada.")
