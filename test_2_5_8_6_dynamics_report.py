@@ -57,8 +57,23 @@ def test_the_report() -> None:
     check(results["report"] == report and "sff_ficha_serie" not in report and "### Dónde está cada serie" in report,
           "the step returns the text of the report; every series is in sff_forecast_series (no card table)")
     check("s2_5_phi" in results["forecast_series"].columns, "the forecast series dimension carries the dynamics of its composition")
-    check("3 checks: 3 ok" in step_section(console, "8.6"),
-          "the checks of the report pass: its chapters, sff_veredicto_bloques and sff_perfil_datos written and read back")
+    check("4 checks: 4 ok" in step_section(console, "8.6"),
+          "the checks of the report pass: its chapters, sff_veredicto_bloques and sff_perfil_datos written and read back, "
+          "and the year by region adds up to the total of the year")
+    section = step_section(console, "8.6")
+    check("THE YEAR 2026 BY" in section and "usd_real_hasta_hoy" in section and "usd_esperado_hasta_fin_de_ano" in section
+          and "UNION ALL" in section,
+          "the final table: the year by region, real so far and expected to December, with the SQL that gives it")
+    from report_queries import year_by_region_query
+    by_region = pd.read_sql(year_by_region_query(configuration), configuration.sql_engine)
+    subtotals = by_region[by_region["orden_region"] == 1]
+    detail = by_region[(by_region["orden_total"] == 0) & (by_region["orden_region"] == 0)]
+    detail = detail if len(detail) else subtotals          # one region level declared: the regions are the subtotals
+    total = by_region[by_region["orden_total"] == 1].iloc[0]
+    check(abs(detail["usd_total_ano"].sum() - total["usd_total_ano"]) < 1e-6
+          and abs(subtotals["usd_total_ano"].sum() - total["usd_total_ano"]) < 1e-6
+          and abs(total["usd_real_hasta_hoy"] + total["usd_esperado_hasta_fin_de_ano"] - total["usd_total_ano"]) < 1e-6,
+          "every region adds up to its subtotal and to the TOTAL; real + expected = the year")
     verdicts = configuration.block_verdicts
     check(sorted(verdicts) == ["B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"] and all(len(frame) for frame in verdicts.values())
           and "VEREDICTO DEL BLOQUE 3 · PRECIO" in console and "VEREDICTO DEL BLOQUE 7 · EXAMEN Y MONTAJE" in console,

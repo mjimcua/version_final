@@ -129,11 +129,19 @@ STEP_3_1_OUTPUT = ("the uplift of every uplift cell (origin, band) · the price 
 def renewer_rows(fine_table: pd.DataFrame, configuration: Config, before_month=None) -> pd.DataFrame:
     """The rows of closed truth months that renewed (optionally only before a month), with
     their pipeline AUV, the two sides of the ratio and their parent and cell ids."""
-    closed = fine_table[fine_table[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)
-                        & (fine_table[configuration.renewed_units_col].fillna(0) > 0)
-                        & (fine_table[configuration.pipeline_units_col] > 0)].copy()
+    # the rows are chosen first and copied once, without the maturation columns (block 3 never reads them). Until
+    # 26-oct-2026 the closed rows were copied whole and then filtered and copied again: three copies of most of the
+    # fine table at the peak, called three times in the block (memory with the real extract)
+    is_renewer = (fine_table[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)
+                  & (fine_table[configuration.renewed_units_col].fillna(0) > 0)
+                  & (fine_table[configuration.pipeline_units_col] > 0))
     if before_month is not None:
-        closed = closed[closed[configuration.period_col] < before_month]
+        is_renewer &= fine_table[configuration.period_col] < before_month
+    if configuration.renewed_pipeline_usd_col:
+        is_renewer &= fine_table[configuration.renewed_pipeline_usd_col] > 0   # a renewer row without its base cannot opine (warned in step 1.2)
+    not_read_here = set(configuration.maturation_columns)
+    columns_read = [column_name for column_name in fine_table.columns if column_name not in not_read_here]
+    closed = fine_table.loc[is_renewer, columns_read].copy()
     closed["auv_pipeline"] = closed[configuration.pipeline_usd_col] / closed[configuration.pipeline_units_col]
     closed["_numerador"] = closed[configuration.renewed_usd_col]
     # the base of the uplift: what the RENEWERS were worth before renewing. Exact when the extract carries it;
@@ -141,10 +149,9 @@ def renewer_rows(fine_table: pd.DataFrame, configuration: Config, before_month=N
     closed["_denominador_aproximado"] = closed[configuration.renewed_units_col] * closed["auv_pipeline"]
     if configuration.renewed_pipeline_usd_col:
         closed["_denominador"] = closed[configuration.renewed_pipeline_usd_col]
-        closed = closed[closed["_denominador"] > 0]        # a renewer row without its base cannot opine (warned in step 1.2)
     else:
         closed["_denominador"] = closed["_denominador_aproximado"]
-    return add_parent_ids(closed, configuration)
+    return add_parent_ids(closed, configuration, copy=False)        # closed is already this function's own copy
 
 
 def closed_view_of_fine_table(fine_table: pd.DataFrame, configuration: Config, before_month=None) -> pd.DataFrame:
@@ -207,12 +214,14 @@ def uplift_history(renewers: pd.DataFrame, as_of, increases: pd.DataFrame, windo
     return rows
 
 
-def add_parent_ids(rows: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+def add_parent_ids(rows: pd.DataFrame, configuration: Config, copy: bool = True) -> pd.DataFrame:
     """The parent of an uplift cell (mandatory dims and discount bucket kept, the other extras
-    '*') and its mandatory cell (only the uplift mandatory dims)."""
+    '*') and its mandatory cell (only the uplift mandatory dims). copy=False adds the two columns to `rows` itself
+    (when the caller already holds its own copy)."""
     uplift_mandatory = configuration.uplift_mandatory_dims or configuration.business_mandatory_dims
     bucket = [configuration.discount_bucket_column] if configuration.discount_value_column else []
-    rows = rows.copy()
+    if copy:
+        rows = rows.copy()
     rows["uplift_padre_id"] = join_columns(rows, list(uplift_mandatory) + bucket) + "|" + WILDCARD
     rows["uplift_celda_mandatory_id"] = join_columns(rows, list(uplift_mandatory))
     return rows
@@ -957,7 +966,8 @@ def show_price_increases(fine_table: pd.DataFrame, renewers: pd.DataFrame, histo
     configuration.show_table(three_ways)
 
     # every increase in play: the month of its cycle today, what still falls due inside it, where it is lost
-    future = fine_table[fine_table[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION]
+    # only the columns it sums (not a copy of every column of the future rows: memory, 26-oct-2026)
+    future = fine_table.loc[fine_table[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION, [*group_dims, period, configuration.pipeline_usd_col]]
     future_due = (future.assign(_grupo=price_group_of(future, group_dims))
                   .groupby(["_grupo", period])[configuration.pipeline_usd_col].sum())
     if len(increases):
@@ -1030,11 +1040,19 @@ def show_series_with_increases(fine_table: pd.DataFrame, renewers: pd.DataFrame,
         doc(f"[{STEP_3_2_LABEL}] the fine table has no {SERIES_ID_COLUMN}: no series to show the step of its increase")
         return
     group_dims = price_group_columns(fine_table, configuration)
-    closed = fine_table[fine_table[CALENDAR_ROLE_COLUMN] != ROLE_PROJECTION]
-    closed = closed.assign(_grupo=price_group_of(closed, group_dims))
+    # the closed rows of the groups with an increase, with only the columns the tables below read. Until 26-oct-2026
+    # this took a copy of every closed row with every column, twice (assign, then the filter): with the extract of
+    # 1.1M rows that copy did not fit in memory (ArrowMemoryError in the real run)
+    measures = [configuration.pipeline_units_col, configuration.pipeline_usd_col,
+                configuration.renewed_units_col, configuration.renewed_usd_col]
+    is_closed = (fine_table[CALENDAR_ROLE_COLUMN] != ROLE_PROJECTION).to_numpy()
+    group_of_closed = price_group_of(fine_table.loc[is_closed, group_dims], group_dims)
     increased_groups = set(calendar["price_group"])
-    money = (closed[closed["_grupo"].isin(increased_groups)]
-             .groupby([SERIES_ID_COLUMN, "_grupo"])[configuration.renewed_usd_col].sum().sort_values(ascending=False))
+    in_increased_group = group_of_closed.isin(increased_groups)
+    closed = fine_table.loc[group_of_closed.index[in_increased_group.to_numpy()], [SERIES_ID_COLUMN, period, *measures]]
+    closed = closed.assign(_grupo=group_of_closed[in_increased_group].to_numpy())
+    money = (closed.groupby([SERIES_ID_COLUMN, "_grupo"])[configuration.renewed_usd_col].sum()
+             .sort_values(ascending=False))
     largest = money.head(configuration.price_series_shown)
     doc(f"[{STEP_3_2_LABEL}] the {len(largest)} forecast series with the most renewed USD in a price group with an increase, "
         f"month by month (the last {configuration.price_series_months_shown} closed months): precio_vence rises one cycle "

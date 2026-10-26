@@ -11,7 +11,7 @@ import pandas as pd
 
 from main import run
 from report_queries import (calendar_query, exam_by_month_query, exam_summary_query, forecast_total_query, new_rows_query,
-                            roles_query, table_in_sql)
+                            roles_query, table_in_sql, year_by_region_columns, year_by_region_query)
 from test_helpers import check, console_of, finish, synthetic_with
 
 
@@ -35,7 +35,7 @@ def test_every_query() -> None:
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
     engine = configuration.sql_engine
-    check(console.count("the SQL that reproduces it from the tables of the run") == 6, "six aggregated reports print their SQL")
+    check(console.count("the SQL that reproduces it from the tables of the run") == 7, "seven aggregated reports print their SQL")
     check(table_in_sql(configuration, "nucleo") == ("sff_nucleo" if not configuration.sql_schema else f"{configuration.sql_schema}.sff_nucleo"),
           "the queries name the tables as the run writes them (schema and prefix of the Config)")
 
@@ -60,6 +60,19 @@ def test_every_query() -> None:
     total = pd.read_sql(forecast_total_query(configuration), engine)
     check(same(total, results["forecast_total"], ["ano", "origen"], ["usd_vence", "usd_renovado"]),
           "step 7.3: the total per year and origin (sff_forecast_total)")
+
+    by_region = pd.read_sql(year_by_region_query(configuration), engine)
+    core = results["core"]
+    year = configuration.calendar_boundaries()["current"].year
+    region = year_by_region_columns(configuration)[0]
+    with_money = core[(core["forecast_year"] == year) & ~core["origen_fila"].isin(["hueco", "ts_sin_resultado"])]
+    expected = (with_money.assign(_real=with_money["forecast_renewed_USD"].where(with_money["forecast_status"] == "actual", 0.0),
+                                  _esperado=with_money["forecast_renewed_USD"].where(with_money["forecast_status"] == "forecast", 0.0))
+                .groupby(region).agg(usd_real_hasta_hoy=("_real", "sum"), usd_esperado_hasta_fin_de_ano=("_esperado", "sum"),
+                                     usd_total_ano=("forecast_renewed_USD", "sum")).reset_index())
+    subtotals = by_region[by_region["orden_region"] == 1].drop(columns=["orden_total", "orden_region"])
+    check(same(subtotals, expected, [region], ["usd_real_hasta_hoy", "usd_esperado_hasta_fin_de_ano", "usd_total_ano"]),
+          "step 8.6: the year by region (real so far, expected to December) is the core summed in pandas")
 
     exam = results["series_exam"]
     methods = sorted(exam["detail"]["method"].unique(), key=lambda method: (method != "raw", method != "framework", method))

@@ -30,6 +30,24 @@ revisa la salida.
 > Todo queda en `sff_veredicto_bloques` y `sff_perfil_datos`, y en el capítulo 0 del informe. El análisis completo, en
 > `REVISION_FRAMEWORK_2026-10-25.md`.
 
+> **Desde el 26-oct-2026: al empezar, lo que implica la Config.** Las primeras líneas `[ORQ]` ya no listan los
+> parámetros cambiados: sus valores, con los pasos que leen cada uno, están en `sff_parametros` (paso 8.4). En su lugar
+> sale `WHAT THIS CONFIG IMPLIES`, con lo que significan para esta ejecución:
+> - **calendario:** el mes en curso y el último cerrado; entrenamiento, meses que eligen la técnica, examen y
+>   proyección; qué meses ve cada horizonte del examen; desde qué mes se borra la pipeline de 1 año aún no conocida; qué
+>   captación se simula y cuándo vence; en qué meses se aprenden el uplift y la mezcla de los estados;
+> - **dimensiones:** de cuántas dims está hecha una forecast series, una celda de uplift y un grupo de precio; por qué
+>   regiones se proyecta el time series;
+> - **estados del cliente:** cuáles tienen curva de maduración, cuáles toman su cuota histórica y cómo se tratan las
+>   combinaciones;
+> - **captación y precio:** qué se simula, con qué descuento, y si la base del uplift es exacta;
+> - **lo que elige el examen:** la técnica, la vía del uplift y la regla del nivel del time series.
+
+> **Desde el 26-oct-2026: la tabla final.** Lo último que sale (8.6, acción 8) es el USD renovado del año en curso
+> por `tr_regional_level_1` y `tr_regional_level_3`: lo real hasta el último mes cerrado, lo esperado hasta diciembre y
+> su suma, con el TOTAL de cada región y del año. Sale de una consulta sobre `sff_nucleo`, que se imprime debajo. La
+> comprobación 4 del 8.6 dice que su TOTAL es el del año en `sff_forecast_total`.
+
 ---
 
 ## Paso 1.1 · Validar el raw

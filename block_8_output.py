@@ -55,7 +55,7 @@ from config import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, Config, COVERAG
 from block_2_rate import band_of_horizon, credibility_k_detail, dynamics_of_one_series
 from graficos import CHART_FOLDER, draw_charts
 from price_increases import increase_calendar, price_monitor
-from report_queries import new_rows_query
+from report_queries import new_rows_query, year_by_region_columns, year_by_region_query
 from resumen_negocio import business_summary, gain_text, show_business_summary
 from verdicts import record_the_verdict, verdict_table
 from techniques import CATALOGUE, inverse_logit, predict_logit
@@ -1942,8 +1942,11 @@ STEP_8_6_ACTIONS = ["the verdict of block 8, the nine chapters of the report, th
                     "check the report (check 1)",
                     "write the report file",
                     "write the verdicts of every block and the profile of the pipeline (checks 2-3)",
+                    "the year by region, read from sff_nucleo with its SQL: renewed so far and expected to December "
+                    "(check 4)",
                     "count the checks; stop if any failed",
-                    "show the headline numbers, as a table, and the summary for the business"]
+                    "show the headline numbers, as a table, and the summary for the business",
+                    "show the final table: the year by region"]
 STEP_8_6_OUTPUT = ("the text of the report · file informe_sff.md · tables sff_veredicto_bloques (block × question) and "
                    "sff_perfil_datos (the profile of the pipeline)")
 
@@ -2028,15 +2031,66 @@ def build_report(extract_summary: dict, results: dict, configuration: Config) ->
         configuration.log_not_evaluated(STEP_8_6_LABEL, check_log, f"table {configuration.table_prefix}{TABLE_DATA_PROFILE} "
                                         "written and read back", "block 1 left no profile")
 
-    # [5] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_8_6_LABEL, 5, "counting the checks")
+    # [5] the year by region, from the core as SQL reads it (shown at the end, action 8)
+    configuration.log_action(STEP_8_6_LABEL, 5, "the year by region, read from the core with its SQL")
+    year_by_region = read_the_year_by_region(results, configuration, check_log)
+
+    # [6] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_8_6_LABEL, 6, "counting the checks")
     configuration.log_check_summary(STEP_8_6_LABEL, STEP_8_6_NAME, check_log)
 
-    # [6] the headline numbers, and the summary for the business
-    configuration.log_action(STEP_8_6_LABEL, 6, "the headline numbers of this run:")
+    # [7] the headline numbers, and the summary for the business
+    configuration.log_action(STEP_8_6_LABEL, 7, "the headline numbers of this run:")
     configuration.show_table(pd.DataFrame(headline, columns=["indicador", "valor"]))
     show_business_summary(results, configuration, STEP_8_6_LABEL)
+
+    # [8] the final table
+    show_the_year_by_region(year_by_region, configuration)
     return report_text
+
+
+# ─── the final table: the year by region (actions 5 and 8) ───────────────────────
+def read_the_year_by_region(results: dict, configuration: Config, check_log: list):
+    """The USD renewed in the current year by region (report_queries.year_by_region_query), read from sff_nucleo
+    as written, so the table on screen is exactly what the SQL gives in SQL Server or Power BI. Check 4: its TOTAL
+    is the TOTAL of the year in sff_forecast_total (step 7.3). None without a SQL engine (the tables are CSV)."""
+    if configuration.sql_engine is None:
+        configuration.log_not_evaluated(STEP_8_6_LABEL, check_log, "the year by region adds up to the total of the year",
+                                        "no SQL engine: the core is a CSV, the query cannot run")
+        return None
+    sql = year_by_region_query(configuration)
+    year_by_region = pd.read_sql(sql, configuration.sql_engine)
+    year = configuration.calendar_boundaries()["current"].year
+    total_row = year_by_region[year_by_region["orden_total"] == 1]
+    query_total = float(total_row["usd_total_ano"].iloc[0]) if len(total_row) else 0.0
+    forecast_total = results.get("forecast_total")
+    year_total = float(forecast_total.loc[(forecast_total["ano"] == year) & (forecast_total["origen"] == TOTAL_ORIGIN_TOTAL),
+                                          "usd_renovado"].sum()) if forecast_total is not None else np.nan
+    configuration.log_check(STEP_8_6_LABEL, check_log,
+                            f"the year by region adds up to the total of {year} in sff_forecast_total (step 7.3)",
+                            np.isfinite(year_total) and abs(query_total - year_total) <= max(configuration.money_tolerance,
+                                                                               configuration.money_relative_tolerance * abs(year_total)),
+                            failure_detail=f"${query_total:,.0f} by region vs ${year_total:,.0f} in sff_forecast_total",
+                            context=f"${query_total:,.0f} renewed in {year}")
+    year_by_region.attrs["sql"] = sql
+    return year_by_region
+
+
+def show_the_year_by_region(year_by_region, configuration: Config) -> None:
+    """Action 8: the final table on screen, the money in whole dollars, and the SQL that gives it."""
+    if year_by_region is None:
+        return
+    year = configuration.calendar_boundaries()["current"].year
+    last_closed = configuration.calendar_boundaries()["current"] - 1
+    columns = year_by_region_columns(configuration)
+    configuration.log_action(STEP_8_6_LABEL, 8, f"THE YEAR {year} BY {' AND '.join(columns)}: renewed USD, real up to "
+                                                f"{last_closed} and expected from {last_closed + 1} to {year}-12 "
+                                                f"(each region, its TOTAL, and the TOTAL of the year)")
+    shown = year_by_region.drop(columns=["orden_total", "orden_region"]).copy()
+    for column_name in ["usd_real_hasta_hoy", "usd_esperado_hasta_fin_de_ano", "usd_total_ano"]:
+        shown[column_name] = shown[column_name].map(lambda value: f"{value:,.0f}")
+    configuration.show_table(shown)
+    configuration.show_query(STEP_8_6_LABEL, f"the year {year} by region", year_by_region.attrs["sql"])
 
 
 def as_section(chapter_text: str) -> str:

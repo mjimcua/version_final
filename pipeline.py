@@ -57,7 +57,8 @@ from block_5_future_pipeline import FuturePipelineBlock
 from block_6_time_series import TimeSeriesBlock
 from block_7_exam_and_assembly import ExamAndAssemblyBlock
 from block_8_output import OutputBlock, results_of_the_run
-from config import COMPOSITION_ID_COLUMN, Config, RETIRED_TABLES, SERIES_ID_COLUMN, UNIT_ID_COLUMN, parameter_table
+from config import (COMPOSITION_ID_COLUMN, Config, RETIRED_TABLES, SERIES_ID_COLUMN, UNIT_ID_COLUMN, parameter_table,
+                    what_the_configuration_implies)
 from verdicts import record_the_verdict
 
 
@@ -187,15 +188,24 @@ class Orchestrator:
         self.producer_of = {table: step.name for step in self.steps.values() for table in step.writes}
         self.seconds = {}                                  # how long every step took in this run
 
-    def log_changed_parameters(self) -> None:
-        """At the start of a run: the parameters with a value of this run (not the Config's default), each with
-        the steps that read it. The whole table, with every parameter, is written by step 8.4 (sff_parametros)."""
-        parameters = parameter_table(self.configuration)
-        changed = parameters[parameters["cambiado"] == 1]
-        self.configuration.logger.doc(f"[ORQ] {len(parameters)} parameters in the Config · {len(changed)} with a value of this "
-                                      f"run (the rest keep their default; all of them in step 8.4, sff_parametros):")
-        for _, row in changed.iterrows():
-            self.configuration.logger.doc(f"[ORQ]   {row['parametro']} = {row['valor']}   · steps {row['pasos'] or '—'}")
+    def log_what_the_configuration_implies(self) -> None:
+        """At the start of a run: what the Config MEANS for this run (config.what_the_configuration_implies): the
+        months of every role, the dims of every thing, which states mature and how, what is simulated and what the
+        exam chooses. The values themselves are not listed: they are in sff_parametros (step 8.4), with the steps that
+        read each one."""
+        configuration = self.configuration
+        parameters = parameter_table(configuration)
+        changed = int((parameters["cambiado"] == 1).sum())
+        doc = configuration.logger.doc
+        doc("[ORQ] ══════════ WHAT THIS CONFIG IMPLIES ══════════")
+        shown_section = None
+        for section, line in what_the_configuration_implies(configuration):
+            if section != shown_section:
+                doc(f"[ORQ] {section.upper()}")
+                shown_section = section
+            doc(f"[ORQ]   · {line}")
+        doc(f"[ORQ] {changed} of the {len(parameters)} parameters have a value of this run; every one, with its value and "
+            f"the steps that read it: sff_parametros (step 8.4)")
 
     def warn_retired_tables(self) -> None:
         """At the start of a run: the tables an earlier version wrote and this one no longer writes, if they are still
@@ -220,7 +230,7 @@ class Orchestrator:
 
         preparation: a block 1 already run or resumed from SQL (PreparationBlock). Its results go into the context
         and the step 'preparation' is not run again: the pipeline goes on from block 2."""
-        self.log_changed_parameters()
+        self.log_what_the_configuration_implies()
         self.warn_retired_tables()
         # the verdicts of this run start empty (a Config may have run before)
         self.configuration.block_verdicts = {}

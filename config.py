@@ -599,7 +599,7 @@ class Config:
                                                       # by at most this (pp). None: the binomial noise of a series at the
                                                       # support floor, 100·√(p(1−p)/support_floor), p = the training rate
     structural_timevarying_dims: dict = field(default_factory=dict)   # [CFG 1.2 1.7 2.2 4.1 5.1 7.1 8.6] column → "negative" | "positive"
-    distribute_marks: bool = True   # [4.1] the box of stage 4.1 matures the negative states still to come (the forecast
+    distribute_marks: bool = True   # [CFG 4.1] the box of stage 4.1 matures the negative states still to come (the forecast
                                     # carries them). False = the identity box: the forecast with today's states
     maturation_dims: list = field(default_factory=list)  # [CFG 1.2 4.1 7.1 8.6] the states whose extract says WHEN they were set:
                                                       # every one carries <state>_month_0 … <state>_month_<maturation_months>
@@ -628,13 +628,13 @@ class Config:
 
     # ─── statistical parameters ────────────────────────────────────────────────────
     z: float = 1.645                      # [VER 1.7 8.6] 90 % two-sided: every band and every binomial error uses it
-    support_floor: float = 30.0           # [VER 1.2 1.7 2.2 2.3 2.4 2.5 8.2 8.6] contracts in a typical month below which a series' own rate
+    support_floor: float = 30.0           # [CFG VER 1.2 1.7 2.2 2.3 2.4 2.5 8.2 8.6] contracts in a typical month below which a series' own rate
                                           # moves ±15 pp by chance (90 %, p = 0.5): it will borrow support
 
     # ─── the ladder (steps 2.2 and 2.3) ───
-    own_rate_floor: float = 271.0         # [VER 2.2 2.3 8.6] contracts in a typical month to predict ALONE: ±5 pp at 90 % (p = 0.5).
+    own_rate_floor: float = 271.0         # [CFG VER 2.2 2.3 8.6] contracts in a typical month to predict ALONE: ±5 pp at 90 % (p = 0.5).
                                           # 30 says who may speak; 271 who may speak alone
-    collapse_passes: int = 2              # [2.2] stage 3 merges at most this many mandatory dims (collapse order); the passes
+    collapse_passes: int = 2              # [CFG 2.2] stage 3 merges at most this many mandatory dims (collapse order); the passes
                                           # after them are only searched for a credibility reference (stage 4)
     k_cred: float = 60.0                  # [VER 2.3 8.2] Bühlmann k when a relative has too few siblings to estimate it: a series
                                           # with n = 30 keeps 33 % of its own rate ("twice the floor to be believed half")
@@ -656,7 +656,7 @@ class Config:
     term_column: Optional[str] = None             # [CFG 1.3 5.1 7.2] the column with the term of the licence; None = every licence is of 1 year
     one_year_term_value: str = "1 year"           # [CFG 5.1] the value of term_column that means a 1-year licence (only those re-enter)
     renewal_reentry_discount: float = 0.0         # [CFG 5.1] a renewal falls due again at the price it renewed: no discount
-    acquisition_column: Optional[str] = None      # [VER 3.2 5.1 7.2] the column that says a row is an acquisition; None = no acquisition simulated
+    acquisition_column: Optional[str] = None      # [CFG VER 3.2 5.1 7.2] the column that says a row is an acquisition; None = no acquisition simulated
     acquisition_values: list = field(default_factory=list)      # [CFG 3.2 5.1] its values that are acquisition: each one is simulated apart
     renewed_acquisition_value: Any = None   # [CFG 5.1] the value of acquisition_column once an acquisition has renewed: the
                                             # renewal it creates (a proyectada row of step 5.1) is no longer an
@@ -691,7 +691,7 @@ class Config:
                                           # group's prediction as is
 
     # ─── the baseline (step 7.1): the calculation anyone could make, THE reference of every gain ───
-    baseline_months: int = 3              # [7.1 8.6] the rate of its mandatory cell over the last N closed months known at the
+    baseline_months: int = 3              # [CFG 7.1 8.6] the rate of its mandatory cell over the last N closed months known at the
                                           # origin (the portfolio's when the cell has nothing), × what falls due
                                           # (every mandatory dim) or columns joined with "+" (e.g. "region+product")
     # ─── the time_series universe: retail to subscription (step 6.1; totalled in 7.3) ───
@@ -715,11 +715,11 @@ class Config:
                                               # with the least mean error of the simulated total; a name fixes it
                                               # (like-real 25-oct: sin_nivel 42 % vs region 48 %, credibilidad 54 %, total 61 %)
     # ─── the backtest of the rate (step 2.6) ───
-    default_technique: str = "T3_ma3"     # [VER 2.6 2.7 7.1 8.6] the technique to beat: the mean of the last 3 monthly rates (in logit)
+    default_technique: str = "T3_ma3"     # [CFG VER 2.6 2.7 7.1 8.6] the technique to beat: the mean of the last 3 monthly rates (in logit)
                                           # of the composition; another one is chosen only if it beats it in the selection months
-    backtest_selection_months: int = 6    # [2.6 8.6] closed months BEFORE the exam used as targets to CHOOSE the technique
-    backtest_horizons: list = field(default_factory=lambda: [1, 6])   # [2.6 4.1 7.1 8.6] months ahead judged: next month, and six months
-    horizon_bands: dict = field(default_factory=lambda: {"corto": [1, 1], "medio_largo": [2, 6]})   # [2.6 2.7 7.1 7.2 8.2 8.3 8.6] a horizon between
+    backtest_selection_months: int = 6    # [CFG 2.6 8.6] closed months BEFORE the exam used as targets to CHOOSE the technique
+    backtest_horizons: list = field(default_factory=lambda: [1, 6])   # [CFG 2.6 4.1 7.1 8.6] months ahead judged: next month, and six months
+    horizon_bands: dict = field(default_factory=lambda: {"corto": [1, 1], "medio_largo": [2, 6]})   # [CFG 2.6 2.7 7.1 7.2 8.2 8.3 8.6] a horizon between
                                           # two judged ones takes the band of the judged one above it (the wider)
     default_margin_by_band: dict = field(default_factory=lambda: {"corto": 0.10, "medio_largo": 0.0})  # [2.6] how much a
                                           # technique must beat the default technique (in |error| / binomial error) to replace it
@@ -738,17 +738,17 @@ class Config:
     # ladder, the windows a technique is named after (T3_ma3 = 3 months) and their minimum history, the bands of the isolated ratio (ISOLATED_RATIO_BANDS: they are
     # the extract's columns).
     # ─── checks of several steps ───
-    money_tolerance: float = 0.01                 # [1.2 1.3 1.5 2.2 7.2 7.3 8.3 8.5] two money figures "match" within this (USD)
+    money_tolerance: float = 0.01                 # [1.2 1.3 1.5 2.2 7.2 7.3 8.3 8.5 8.6] two money figures "match" within this (USD)
     example_rows_shown: int = 3                   # [CFG 1.4] example rows shown under a failed check (every step's checks)
     measure_relative_tolerance: float = 1e-6      # [1.2] relative margin of the checks between a measure and its whole
-    money_relative_tolerance: float = 1e-9        # [1.5] relative margin of the money conserved from rows to units
+    money_relative_tolerance: float = 1e-9        # [1.5 8.6] relative margin of the money conserved from rows to units
     units_tolerance: float = 1e-6                 # [1.2 7.1 8.1 8.2] two unit counts "match" within this
     rate_tolerance: float = 1e-9                  # [2.7 8.2] two rates "match" within this
     support_tolerance: float = 1e-9               # [2.2 2.4] two supports "match" within this
     rounding_tolerance: float = 1e-9              # [2.3] margin for rounding when comparing z and supports
     # ─── step 1.3 · the calendar ───
     min_training_months: int = 12                 # [1.3] fewer training months: the calendar is not valid
-    one_year_term_months: int = 12                # [1.3 5.1 7.2] months between the sale and the due date of a 1-year licence
+    one_year_term_months: int = 12                # [CFG 1.3 5.1 7.2] months between the sale and the due date of a 1-year licence
     # ─── step 1.7 · the rate series ───
     no_evidence_rate: float = 0.5                 # [1.7] the rate the Wilson error is computed at for a series with no own rate
     largest_series_shown: int = 5                 # [1.7 2.4] the biggest series listed on screen
@@ -798,13 +798,13 @@ class Config:
     price_persistence_months: int = 3             # [3.1 3.2 3.3 7.2 8.4] ...this many months in a row is an increase (not noise)
     price_cycle_months: int = 12                  # [3.1 3.2 3.3 7.2 8.4] the effect of an increase lasts one renewal cycle
     price_min_reference_months: int = 6           # [3.1 3.2 3.3 7.2 8.4] fewer previous months: no reference yet, no flag
-    price_group_dims: list = field(default_factory=list)   # [3.1 3.2 3.3 7.2 8.4] the dims a tariff changes by (region levels,
+    price_group_dims: list = field(default_factory=list)   # [CFG 3.1 3.2 3.3 7.2 8.4] the dims a tariff changes by (region levels,
                                                            # product): every group is watched on its own. Empty = the portfolio
     price_group_min_renewed_units: float = 100.0  # [3.1 3.2 3.3 7.2 8.4] a group's month with fewer renewals is left out of the detection
     # ─── steps 3.1, 3.3 and 7.2 · the window of the statistical uplift ───
-    uplift_window_months: int = 12                # [3.1 3.2 3.3] the statistical uplift is estimated over the last N closed months
+    uplift_window_months: int = 12                # [CFG 3.1 3.2 3.3] the statistical uplift is estimated over the last N closed months
                                                   # (12 = one price cycle: every yearly increase enters once); 0 = all the history
-    uplift_without_increases: bool = True         # [3.1 3.2 3.3 7.2] the months of the window inside the cycle of a detected price
+    uplift_without_increases: bool = True         # [CFG 3.1 3.2 3.3 7.2] the months of the window inside the cycle of a detected price
                                                   # increase are deflated by it (the uplift of the cell is the one without
                                                   # increases) and the increase is applied again to the future months still
                                                   # inside its cycle; after the cycle its effect is lost
@@ -814,7 +814,7 @@ class Config:
     price_series_months_shown: int = 24           # [3.2] the closed months shown for each of them (two cycles)
     # ─── step 4.1 · the maturation of the customer states ───
     maturation_min_units: float = 100.0           # [4.1] a cell (or its calendar month) needs this many units to measure itself
-    maturation_history_months: int = 12           # [4.1 8.6] the final states are measured over the last N closed months
+    maturation_history_months: int = 12           # [CFG 4.1 8.6] the final states are measured over the last N closed months
     maturation_regions_shown: int = 8             # [4.1] the regions of the maturation by region (the largest by units due)
     mark_excess_warning_pp: float = 2.0           # [4.1 7.2] a future month whose state (dormant…) is TODAY this many points above
                                                   # its final share in the history: WARN (a state only grows, so the extract
@@ -846,7 +846,7 @@ class Config:
     core_months_shown: int = 6                    # [8.3] months shown on screen by the core
 
     # ─── where the tables are written ───────────────────────────────────────────────
-    sql_engine: Optional[object] = None   # [CFG ORQ B1] a SQLAlchemy engine; None → CSV files in output_folder
+    sql_engine: Optional[object] = None   # [CFG ORQ B1 8.6] a SQLAlchemy engine; None → CSV files in output_folder
     sql_schema: Optional[str] = None      # [CFG ORQ B1] "dbo" in SQL Server; None in SQLite
     table_prefix: str = "sff_"            # [CFG ORQ B1 6.1 8.4 8.6] every table the framework writes starts with it
     output_folder: str = "salida"         # [CFG ORQ B1 1.2 6.1 8.6] where the CSV tables go when there is no engine
@@ -1279,6 +1279,129 @@ class Config:
         current, test_start = boundaries["current"], boundaries["test_start"]
         return (f"{ROLE_TRAIN} ≤ {test_start - 1} · {ROLE_TEST} {test_start}..{current - 1} · "
                 f"{ROLE_PROJECTION} ≥ {current}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WHAT THE CONFIG IMPLIES: the consequences of the parameters, shown at the start of a run
+# ═══════════════════════════════════════════════════════════════════════════════
+# The values themselves are in sff_parametros (step 8.4). At the start of a run the orchestrator shows instead what
+# they MEAN for this run: which months play which role, which dims make each thing, which states mature and how,
+# what is simulated, and what the exam chooses by itself. Only the Config is read: nothing here needs the data
+# (whether the declared columns are in the extract is checked by step 1.1).
+
+def months_text(first, last) -> str:
+    """'2026-04..2026-09 (6 months)', or the single month."""
+    count = (last - first).n + 1
+    return f"{first}" if count == 1 else f"{first}..{last} ({count} months)"
+
+
+def what_the_configuration_implies(configuration: "Config") -> list:
+    """The consequences of the Config for this run: a list of (section, line), in the order they are shown."""
+    lines = []
+    boundaries = configuration.calendar_boundaries()
+    current, test_start = boundaries["current"], boundaries["test_start"]
+    last_closed = current - 1
+
+    # ─── the calendar ───
+    section = "calendar"
+    lines.append((section, f"current month {current}: still running, its renewals are wiped (step 1.3); "
+                           f"the last closed month is {last_closed}"))
+    selection_start = test_start - int(configuration.backtest_selection_months)
+    lines.append((section, f"training ≤ {test_start - 1} (its last months, {months_text(selection_start, test_start - 1)}, choose "
+                           f"the technique) · exam {months_text(test_start, last_closed)} · projection ≥ {current}"))
+    horizons = sorted(int(h) for h in configuration.backtest_horizons)
+    examples = " · ".join(f"h = {h}: {last_closed} is predicted with the months up to {last_closed - h}" for h in horizons)
+    lines.append((section, f"the exam judges the horizons {horizons}: {examples}"))
+    one_year_cut = current + int(configuration.one_year_term_months)
+    term_text = (f"the 1-year licences ({configuration.term_column} = '{configuration.one_year_term_value}')"
+                 if configuration.term_column else "every licence (no term_column: all are 1-year)")
+    lines.append((section, f"{term_text} due from {one_year_cut} on are sold or renewed from {current} on: their pipeline is "
+                           f"not known yet, step 1.3 wipes it and step 5.1 projects and simulates it"))
+    window = configuration.simulation_window
+    if window and configuration.acquisition_column:
+        lines.append((section, f"acquisitions simulated {months_text(window[0], window[-1])}: they fall due "
+                               f"{months_text(window[0] + int(configuration.one_year_term_months), window[-1] + int(configuration.one_year_term_months))}"))
+    uplift_months = int(configuration.uplift_window_months)
+    uplift_text = (f"{months_text(current - uplift_months, last_closed)}" if uplift_months else f"every closed month up to {last_closed}")
+    lines.append((section, f"the statistical uplift is learned on {uplift_text}"
+                           + (", leaving out the months inside the cycle of a detected price increase"
+                              if configuration.uplift_without_increases else "")))
+    maturation_months = int(configuration.maturation_history_months)
+    lines.append((section, f"the final mix of the customer states and their curves are learned on "
+                           f"{months_text(current - maturation_months, last_closed)}"))
+    lines.append((section, f"the baseline every gain is measured against: the rate of its mandatory cell over the last "
+                           f"{configuration.baseline_months} closed months known at each origin"))
+
+    # ─── the dimensions ───
+    section = "dimensions"
+    generated = configuration.generated_columns
+    from_extract = [column for column in configuration.business_mandatory_dims if column not in generated]
+    states = list(configuration.structural_timevarying_dims)
+    lines.append((section, f"a forecast series = {len(configuration.rate_series_columns)} dims: {len(from_extract)} mandatory of the "
+                           f"extract" + (f" + {len(generated)} generated in step 1.2 ({', '.join(generated)})" if generated else "")
+                           + (f" + {len(states)} customer states" if states else "")
+                           + (f" + {len(configuration.extra_renovacion)} extra_renovacion ({', '.join(configuration.extra_renovacion)})"
+                              if configuration.extra_renovacion else "")))
+    lines.append((section, f"the ladder merges a small series with its relatives by the mandatory dims (at most "
+                           f"{configuration.collapse_passes} passes in its stage 3); below {configuration.support_floor:g} contracts a "
+                           f"month a series borrows rate, from {configuration.own_rate_floor:g} it predicts alone"))
+    uplift_mandatory = configuration.uplift_mandatory_dims or configuration.business_mandatory_dims
+    bucket_count = len(configuration.discount_bucket_edges) - 1
+    lines.append((section, f"an uplift cell (the price) = {len(uplift_mandatory)} mandatory dims"
+                           + (f" + {len(configuration.extra_revalorizacion)} extra_revalorizacion" if configuration.extra_revalorizacion
+                              else " (no extra_revalorizacion)")
+                           + (f" + the discount bucket ({bucket_count} buckets of '{configuration.discount_value_column}', and "
+                              f"'{UNKNOWN_DISCOUNT_BUCKET}' when it is unknown)" if configuration.discount_value_column else "")))
+    if configuration.price_group_dims:
+        lines.append((section, f"the price increases are detected per {' × '.join(configuration.price_group_dims)}"))
+    regions = region_columns_of(configuration)
+    lines.append((section, f"the time_series universe is projected by {' › '.join(regions)}; the maturation by region of "
+                           f"step 4.1 is drawn by {regions[0]}"))
+
+    # ─── the customer states ───
+    section = "customer states"
+    if not states:
+        lines.append((section, "no customer state: nothing matures"))
+    elif not configuration.distribute_marks:
+        lines.append((section, f"{', '.join(states)}: distribute_marks is off, the forecast keeps today's states (no maturation)"))
+    else:
+        dated = [state for state in configuration.maturation_dims if state in states]
+        undated = [state for state in states if state not in dated]
+        if dated:
+            lines.append((section, f"{', '.join(dated)}: maturation CURVE from their dates (<state>_month_0 … "
+                                   f"_{configuration.maturation_months}; step 1.1 stops if a column is missing), examined in "
+                                   f"step 4.1"))
+        if undated:
+            lines.append((section, f"{', '.join(undated)}: no dates, so no curve and no exam: they take their historical final "
+                                   f"share"))
+        lines.append((section, "the combinations (e.g. dormant+softcancel) are categories of their own; units only move from "
+                               "neutral, a unit already in a state does not take a second one"))
+
+    # ─── the acquisitions and the price ───
+    section = "acquisitions and price"
+    if configuration.acquisition_column and configuration.acquisition_values:
+        lines.append((section, f"{configuration.acquisition_column} = {', '.join(map(str, configuration.acquisition_values))}: "
+                               f"simulated apart, sold at {configuration.acquisition_discount:.0%} off and renewed at full price "
+                               f"as '{configuration.renewed_acquisition_value}'"
+                               + (f" with {', '.join(f'{k} = {v}' for k, v in configuration.dims_after_renewal.items())}"
+                                  if configuration.dims_after_renewal else "")))
+    else:
+        lines.append((section, "no acquisition_column: no acquisition is simulated"))
+    lines.append((section, "the base of the uplift is " + (f"exact ('{configuration.renewed_pipeline_usd_col}': what the renewers "
+                                                           f"were worth)" if configuration.renewed_pipeline_usd_col
+                                                           else "approximate (renewed units × the average due price of the row)")))
+    if configuration.isolated_renewed_usd_col:
+        lines.append((section, "the isolated renewals are declared: step 3.2 reads the revaluation licence by licence"))
+
+    # ─── what the exam chooses by itself ───
+    section = "chosen by the exam"
+    lines.append((section, f"the technique of every pool and horizon band ({', '.join(configuration.horizon_bands)}) against "
+                           f"{configuration.default_technique}"))
+    lines.append((section, "the way of the uplift where the discount is known (statistical, contract, or both), and whether "
+                           "the price by state is applied"))
+    lines.append((section, "the level rule of the time_series universe" if configuration.ts_level_rule is None
+                           else f"(not) the level rule of the time_series universe: fixed to '{configuration.ts_level_rule}'"))
+    return lines
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

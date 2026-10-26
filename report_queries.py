@@ -15,13 +15,14 @@ SQL Server and SQLite both run (the tests run every query on SQLite and compare 
   forecast_total_query    step 7.3  the total per year and origin (sff_forecast_total)    ← sff_nucleo
   exam_by_month_query     step 7.1  the total of every exam month per method              ← sff_series_exam_detail
   exam_summary_query      step 7.1  the exam per method and horizon                       ← sff_series_exam_detail
+  year_by_region_query    step 8.6  the year by region: renewed so far and expected to its end ← sff_nucleo
 
 The reports computed with medians or quantiles (the ladder summary, the error bands) or from the JSON of
 the generated levels have no query here: they are not a plain sum over a detail table.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
-from config import TABLE_CORE, TABLE_SERIES_EXAM_DETAIL
+from config import TABLE_CORE, TABLE_SERIES_EXAM_DETAIL, region_columns_of
 
 
 def table_in_sql(configuration, table_name: str) -> str:
@@ -137,3 +138,46 @@ SELECT d.method AS metodo, d.h,
        AVG(d.in_band) AS en_intervalo
 FROM {detail} d
 GROUP BY d.method, d.h ORDER BY d.h, error_total_medio;"""
+
+
+def year_by_region_columns(configuration) -> list:
+    """The two region levels of the year by region: the first and the last of region_columns_of (with the
+    production Config, tr_regional_level_1 and tr_regional_level_3); one level when only one is declared."""
+    regions = region_columns_of(configuration)
+    return list(dict.fromkeys([regions[0], regions[-1]]))
+
+
+def year_by_region_query(configuration) -> str:
+    """Step 8.6, the final table: the USD renewed in the current year by region, in two columns: what really
+    renewed in the closed months (forecast_status = 'actual', up to the last closed month) and what is expected
+    from the current month to December (forecast_status = 'forecast'), and their sum. One row per region of the
+    first and last level, then the subtotal of every region of the first level (its finer level = 'TOTAL'), then the
+    TOTAL of the year.
+
+    The same rows as the total of step 7.3: a gap (nothing due) and an original time_series row of a month not
+    closed yet (replaced by its projection) carry no money and are left out. The TOTAL equals the TOTAL row of
+    sff_forecast_total for the year (step 8.6 checks it). Plain SQL (UNION ALL, no ROLLUP): SQL Server and SQLite."""
+    core = table_in_sql(configuration, TABLE_CORE)
+    year = configuration.calendar_boundaries()["current"].year
+    without_money = "origen_fila NOT IN ('hueco', 'ts_sin_resultado')"
+    first_level, *finer = year_by_region_columns(configuration)
+    last_level = finer[-1] if finer else None
+    real = "SUM(CASE WHEN forecast_status = 'actual' THEN forecast_renewed_USD ELSE 0 END)"
+    expected = "SUM(CASE WHEN forecast_status = 'forecast' THEN forecast_renewed_USD ELSE 0 END)"
+    total = "SUM(forecast_renewed_USD)"
+    money = f"{real} AS usd_real_hasta_hoy, {expected} AS usd_esperado_hasta_fin_de_ano, {total} AS usd_total_ano"
+    where = f"WHERE forecast_year = {year} AND {without_money}"
+    detail = (f"""SELECT 0 AS orden_total, {first_level} AS {first_level}, 0 AS orden_region, {last_level} AS {last_level}, {money}
+FROM {core} {where}
+GROUP BY {first_level}, {last_level}
+UNION ALL
+""" if last_level else "")
+    last_label = f", 'TOTAL' AS {last_level}" if last_level else ""   # the subtotal of a region: its finer level says TOTAL
+    return f"""-- step 8.6 · the year {year} by region: renewed so far (closed months) and expected to December
+{detail}SELECT 0 AS orden_total, {first_level} AS {first_level}, 1 AS orden_region{last_label}, {money}
+FROM {core} {where}
+GROUP BY {first_level}
+UNION ALL
+SELECT 1, 'TOTAL', 2{", 'TOTAL'" if last_level else ""}, {money}
+FROM {core} {where}
+ORDER BY 1, 2, 3, 4;"""
