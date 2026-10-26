@@ -20,8 +20,7 @@ THE STEPS (each one keeps its actions, its checks and its text on screen; until 
   1.7  rate series              gaps, the rate of every unit, the support, own rate, error and sign of every series
 
 READS: the extract (read_raw of the Config) and the Config.
-GIVES: raw_extract, validated_extract, leveled_raw, time_series_rows, calendared_raw, fine_table, forecast_units,
-       series_table, rated_units, series_rate.
+GIVES: extract_summary, time_series_rows, fine_table, forecast_units, series_table, rated_units, series_rate.
 
 THE INTERFACE:
   block = PreparationBlock(configuration).run()        every step, in order; the results stay in memory
@@ -30,16 +29,24 @@ THE INTERFACE:
   Orchestrator(configuration).run(preparation=block)   the rest of the pipeline, from block 2, with this block
 
   The results are attributes of the block (in memory unless persisted):
-    raw_extract        the extract as read
-    validated_extract  step 1.1: the same rows, period as a monthly Period
-    leveled_raw        step 1.2: the renewal universe with its generated levels
+    extract_summary    the extract in four numbers: rows, columns, units and USD due (what steps 8.5 and 8.6 read
+                       of it, and the fingerprint)
     time_series_rows   step 1.2: the time_series universe
-    calendared_raw     step 1.3: the role of every month, the s0_ columns
     fine_table         step 1.4: every row with its ids
     forecast_units     step 1.5: one row per series and month
     series_table       step 1.6: one row per series with its route
     rated_units        step 1.7: the units with the gap rows and the rate of every unit
     series_rate        step 1.7: one row per series with its support, own rate, error and sign
+
+  MEMORY (since 26-oct-2026): steps 1.1 to 1.4 each make a new frame the size of the extract (the validated
+  extract, the leveled raw, the calendared raw, the fine table). Each one is released as soon as the next step has
+  made its own, so the block never holds more than two of them at once, and only the fine table stays. With the
+  extract of 1.1M rows, the block kept five copies (4.5 GB in the like-real ×3); now it keeps one. To look at an
+  intermediate frame, call its step on its own: validate_raw, validate_values_and_build_levels, apply_calendar.
+
+  Before 26-oct-2026 the block also gave raw_extract, validated_extract, leveled_raw and calendared_raw (the fine
+  table without the four columns of step 1.4). No step after the block read them but steps 8.5 and 8.6, and those
+  only read the four numbers now in extract_summary.
 
 PERSIST AND RESUME:
   persist_block writes what the steps after the block read (time_series_rows, fine_table, forecast_units,
@@ -47,13 +54,13 @@ PERSIST AND RESUME:
   every column back its type when it is read) and the fingerprint (what the block was built from: the rows and the
   USD due of the extract, the current month, and the value of every field of the Config that the block reads).
   resume_block_from_sql reads them back, every column with its type and every table with its index, and reads the
-  extract again (steps 8.5 and 8.6 need it). It stops if the extract, the current month or a field of the Config the
-  block reads has changed since it was persisted: the block would no longer be the one of this run.
-  validated_extract and leveled_raw are not persisted: no step after the block reads them. calendared_raw is the fine
-  table without the four columns of step 1.4.
+  extract again to compare its fingerprint and keep its summary (steps 8.5 and 8.6 read it). It stops if the
+  extract, the current month or a field of the Config the block reads has changed since it was persisted: the block
+  would no longer be the one of this run.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
+import gc
 import json
 import os
 import re
@@ -73,7 +80,8 @@ from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, COLUMN_ROLE_IGNORE
                     TABLE_BLOCK_1_FORECAST_UNITS, TABLE_BLOCK_1_MANIFEST, TABLE_BLOCK_1_RATED_UNITS,
                     TABLE_BLOCK_1_SERIES, TABLE_BLOCK_1_SERIES_RATE, TABLE_BLOCK_1_TIME_SERIES_ROWS, TRUTH_ROLES,
                     UNIT_ID_COLUMN, UNKNOWN_DISCOUNT_BUCKET, UPLIFT_CELL_ID_COLUMN, discount_bucket_labels, is_one_year,
-                    join_columns, parse_month, region_columns_of, roles_overview, steps_reading_each_field)
+                    join_columns, parse_month, region_columns_of, roles_overview, steps_reading_each_field,
+                    write_frame_to_sql)
 from report_queries import calendar_query, roles_query
 from time_series_charts import draw_the_history_of_the_time_series, draw_without_stopping
 
@@ -93,6 +101,8 @@ from time_series_charts import draw_the_history_of_the_time_series, draw_without
 #   4. count the checks; stop if any failed
 #   5. convert the period to a monthly Period
 #   6. show the columns by role and the calendar, as tables
+#   7. summarise what was read: rows, pipeline (units and USD falling due) and renewals, by calendar role
+#      and universe. A count, not a check: the values themselves are checked in step 1.2
 #
 # Checks (logged as they are made, numbered, at the level of their status):
 #    1. the raw has rows
@@ -118,7 +128,9 @@ STEP_1_1_ACTIONS = ["read the roles the Config declares",
                 "read the months of the raw and fit the calendar to them (checks 5-10)",
                 "count the checks; stop if any failed",
                 "convert the period to a monthly Period",
-                "show the columns by role and the calendar, as tables"]
+                "show the columns by role and the calendar, as tables",
+                "summarise what was read: rows, pipeline (units and USD falling due) and renewals, "
+                "by calendar role and universe"]
 STEP_1_1_OUTPUT = "the raw, same rows and columns, with the period as a monthly Period (nothing is written)"
 
 
@@ -177,6 +189,9 @@ def validate_raw(raw: pd.DataFrame, configuration: Config) -> pd.DataFrame:
 
     # [6] what the raw is
     log_raw_report(validated, configuration, column_roles, raw_months)
+
+    # [7] what was read: rows, units and dollars
+    log_read_summary(validated, configuration)
     return validated
 
 
@@ -256,6 +271,102 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
     months_per_role = pd.Series(configuration.role_of_months(pd.Series(raw_months))).value_counts()
     configuration.show_table(pd.DataFrame([{CALENDAR_ROLE_COLUMN: role, "meses": int(months_per_role.get(role, 0)), "filas": int(row_count)}
                                            for role, row_count in rows_per_role.items()]))
+
+
+
+# ─── action 7: the summary of what was read ─────────────────────────────────────
+READ_UNIVERSE_RENEWALS = "renovaciones"
+READ_UNIVERSE_TIME_SERIES = "time_series"
+READ_TOTAL_LABEL = "total"
+
+
+def read_summary(validated: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """What was read, one row per universe and calendar role, plus a total per universe:
+    months, rows, the pipeline (units and USD falling due) and the renewals (units and USD renewed).
+
+    The values are not checked yet (that is step 1.2): here a null, or a text that is not a number,
+    counts as 0. The renewals of the projection months are early results that step 1.3 wipes;
+    they are shown so the reader sees what the extract carries, not what the forecast uses."""
+
+    def measure_as_number(column_name: str) -> pd.Series:
+        if column_name in validated.columns:
+            return pd.to_numeric(validated[column_name], errors="coerce").fillna(0.0)
+        return pd.Series(0.0, index=validated.index)
+
+    time_series_flag_column = configuration.flag_time_series_col
+    if time_series_flag_column in validated.columns:
+        time_series_flag = pd.to_numeric(validated[time_series_flag_column], errors="coerce").fillna(0)
+        is_time_series_row = (time_series_flag == 1).to_numpy()
+    else:
+        is_time_series_row = np.zeros(len(validated), dtype=bool)
+
+    rows = pd.DataFrame({
+        "universo": np.where(is_time_series_row, READ_UNIVERSE_TIME_SERIES, READ_UNIVERSE_RENEWALS),
+        CALENDAR_ROLE_COLUMN: configuration.role_of_months(validated[configuration.period_col]),
+        "mes": validated[configuration.period_col].to_numpy(),
+        "unidades_vencen": measure_as_number(configuration.pipeline_units_col).to_numpy(),
+        "usd_vence": measure_as_number(configuration.pipeline_usd_col).to_numpy(),
+        "unidades_renovadas": measure_as_number(configuration.renewed_units_col).to_numpy(),
+        "usd_renovado": measure_as_number(configuration.renewed_usd_col).to_numpy(),
+    })
+
+    summary_rows = []
+    for universe in [READ_UNIVERSE_RENEWALS, READ_UNIVERSE_TIME_SERIES]:
+        rows_of_universe = rows[rows["universo"] == universe]
+        if rows_of_universe.empty:
+            continue
+        groups = [(role, rows_of_universe[rows_of_universe[CALENDAR_ROLE_COLUMN] == role]) for role in ROLES_IN_ORDER]
+        groups.append((READ_TOTAL_LABEL, rows_of_universe))
+        for role, rows_of_group in groups:
+            if rows_of_group.empty:
+                continue
+            summary_rows.append({
+                "universo": universe,
+                CALENDAR_ROLE_COLUMN: role,
+                "meses": int(rows_of_group["mes"].nunique()),
+                "filas": int(len(rows_of_group)),
+                "unidades_vencen": float(rows_of_group["unidades_vencen"].sum()),
+                "usd_vence": float(rows_of_group["usd_vence"].sum()),
+                "unidades_renovadas": float(rows_of_group["unidades_renovadas"].sum()),
+                "usd_renovado": float(rows_of_group["usd_renovado"].sum()),
+            })
+    return pd.DataFrame(summary_rows)
+
+
+def log_read_summary(validated: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """Action 7: one line with what was read (rows, units and USD of pipeline) and the table by
+    calendar role and universe. Returns the table."""
+    summary = read_summary(validated, configuration)
+    renewals_total = summary[(summary["universo"] == READ_UNIVERSE_RENEWALS)
+                             & (summary[CALENDAR_ROLE_COLUMN] == READ_TOTAL_LABEL)]
+    renewals_projection = summary[(summary["universo"] == READ_UNIVERSE_RENEWALS)
+                                  & (summary[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION)]
+    time_series_total = summary[(summary["universo"] == READ_UNIVERSE_TIME_SERIES)
+                                & (summary[CALENDAR_ROLE_COLUMN] == READ_TOTAL_LABEL)]
+
+    headline = f"read: {len(validated):,} rows"
+    if len(renewals_total):
+        total = renewals_total.iloc[0]
+        headline += (f" · pipeline {total['unidades_vencen']:,.0f} units and ${total['usd_vence']:,.0f} falling due "
+                     f"in {total['meses']} months")
+    if len(renewals_projection):
+        projection = renewals_projection.iloc[0]
+        headline += (f", of which {projection['unidades_vencen']:,.0f} units and ${projection['usd_vence']:,.0f} "
+                     f"from the current month on ({projection['meses']} months to forecast)")
+    if len(time_series_total):
+        time_series = time_series_total.iloc[0]
+        headline += (f" · time_series universe: {time_series['filas']:,} rows, {time_series['unidades_renovadas']:,.0f} "
+                     f"units and ${time_series['usd_renovado']:,.0f} renewed (no pipeline)")
+    configuration.log_action(STEP_1_1_LABEL, 7, headline)
+
+    configuration.logger.doc(f"[{STEP_1_1_LABEL}] what was read, by universe and calendar role (values not checked yet: "
+                             f"a null counts as 0; the renewals of the projection months are early results "
+                             f"that step 1.3 wipes):")
+    shown = summary.copy()
+    for column_name in ["filas", "unidades_vencen", "usd_vence", "unidades_renovadas", "usd_renovado"]:
+        shown[column_name] = shown[column_name].map(lambda value: f"{value:,.0f}")
+    configuration.show_table(shown)
+    return summary
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -1183,7 +1294,7 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     calendared[S0_RENEWED_USD_COLUMN] = calendared[configuration.renewed_usd_col]
     calendared[S0_PIPELINE_UNITS_COLUMN] = calendared[configuration.pipeline_units_col]
     calendared[S0_PIPELINE_USD_COLUMN] = calendared[configuration.pipeline_usd_col]
-    configuration.log_action(STEP_1_3_LABEL, 1, f"renewals and pipeline kept as the raw had them in the s0_ columns")
+    configuration.log_action(STEP_1_3_LABEL, 1, "renewals and pipeline kept as the raw had them in the s0_ columns")
 
     # [2] the role of every row and the state of the current month, from the calendar
     calendared[CALENDAR_ROLE_COLUMN] = configuration.role_of_months(calendared[period_column])
@@ -1254,7 +1365,6 @@ def months_by_role(calendared: pd.DataFrame, configuration: Config) -> dict:
 def check_roles_and_calendar(calendared: pd.DataFrame, configuration: Config, check_log: list,
                              months_per_role: dict, boundaries: dict) -> None:
     """Checks 1 to 4: roles assigned, enough training, exam with data, pipeline this month."""
-    period_column = configuration.period_col
 
     # [1] every row has one of the three roles
     unknown_roles = sorted(set(calendared[CALENDAR_ROLE_COLUMN]) - set(ROLES_IN_ORDER))
@@ -2222,16 +2332,24 @@ FIELDS_THAT_DO_NOT_CHANGE_THE_BLOCK = {"sql_engine", "sql_schema", "table_prefix
                                        "log_colors", "log_file", "example_rows_shown", "largest_series_shown"}
 
 
+
+def summary_of_the_extract(raw_extract: pd.DataFrame, configuration: Config) -> dict:
+    """The extract in four numbers: what the steps after the block read of it (8.5: the USD due of the chain;
+    8.6: rows and columns) and what the fingerprint of persist_block compares. The extract itself is not kept.
+    The sums are taken as the raw has them, before any check (the same sums the fingerprint always took)."""
+    return {"filas": int(len(raw_extract)),
+            "columnas": int(len(raw_extract.columns)),
+            "unidades_vencen": float(raw_extract[configuration.pipeline_units_col].sum()),
+            "usd_vence": float(raw_extract[configuration.pipeline_usd_col].sum())}
+
+
 class PreparationBlock:
     """BLOCK 1 · PREPARATION (see the header of this module): its results are attributes, in memory."""
 
     def __init__(self, configuration: Config):
         self.configuration = configuration
-        self.raw_extract = None
-        self.validated_extract = None
-        self.leveled_raw = None
+        self.extract_summary = None       # rows, columns, units and USD due of the extract (the extract itself is not kept)
         self.time_series_rows = None
-        self.calendared_raw = None
         self.fine_table = None
         self.forecast_units = None
         self.series_table = None
@@ -2246,23 +2364,31 @@ class PreparationBlock:
         configuration = self.configuration
         if raw_extract is None:
             raw_extract = self.read_the_raw_extract()
-        self.raw_extract = raw_extract
+        self.extract_summary = summary_of_the_extract(raw_extract, configuration)
         configuration.log_block_start(BLOCK_LABEL, 1, BLOCK_NAME, BLOCK_MISSION)
 
+        # steps 1.1 to 1.4: each one makes a frame the size of the extract from the one before; the one before is
+        # released as soon as the new one exists (see MEMORY in the header). `del` drops this method's name for it:
+        # the memory is freed when nothing else holds the frame (a raw given by the caller stays with the caller)
         started = time.time()
-        self.validated_extract = validate_raw(self.raw_extract, configuration)
+        validated_extract = validate_raw(raw_extract, configuration)
+        del raw_extract
         self.seconds["1.1 validate_raw"] = time.time() - started
 
         started = time.time()
-        self.leveled_raw, self.time_series_rows = validate_values_and_build_levels(self.validated_extract, configuration)
+        leveled_raw, self.time_series_rows = validate_values_and_build_levels(validated_extract, configuration)
+        del validated_extract
         self.seconds["1.2 values_and_levels"] = time.time() - started
 
         started = time.time()
-        self.calendared_raw = apply_calendar(self.leveled_raw, configuration)
+        calendared_raw = apply_calendar(leveled_raw, configuration)
+        del leveled_raw
         self.seconds["1.3 calendar"] = time.time() - started
 
         started = time.time()
-        self.fine_table = build_fine_table(self.calendared_raw, configuration)
+        self.fine_table = build_fine_table(calendared_raw, configuration)
+        del calendared_raw
+        gc.collect()                      # the three frames above, freed now and not at some later collection
         self.seconds["1.4 fine_table"] = time.time() - started
 
         started = time.time()
@@ -2293,9 +2419,8 @@ class PreparationBlock:
 
     def results(self) -> dict:
         """The results under the names the pipeline gives them (what is not there is left out)."""
-        named = {"raw_extract": self.raw_extract, "validated_extract": self.validated_extract,
-                 "leveled_raw": self.leveled_raw, "time_series_rows": self.time_series_rows,
-                 "calendared_raw": self.calendared_raw, "fine_table": self.fine_table,
+        named = {"extract_summary": self.extract_summary, "time_series_rows": self.time_series_rows,
+                 "fine_table": self.fine_table,
                  "forecast_units": self.forecast_units, "series_table": self.series_table,
                  "rated_units": self.rated_units, "series_rate": self.series_rate}
         return {name: value for name, value in named.items() if value is not None}
@@ -2330,8 +2455,8 @@ class PreparationBlock:
         """What the block was built from: the extract (rows and USD due), the current month and every field of the
         Config the block reads that can change its results."""
         configuration = self.configuration
-        fingerprint = {"extract_rows": str(len(self.raw_extract)),
-                       "extract_usd_due": f"{float(self.raw_extract[configuration.pipeline_usd_col].sum()):.6f}",
+        fingerprint = {"extract_rows": str(self.extract_summary["filas"]),
+                       "extract_usd_due": f"{self.extract_summary['usd_vence']:.6f}",
                        "current_month": str(configuration.calendar_boundaries()["current"])}
         for field_name in fields_the_block_reads(configuration):
             fingerprint[f"config.{field_name}"] = repr(getattr(configuration, field_name))
@@ -2347,7 +2472,7 @@ class PreparationBlock:
         manifest["posicion"] = pd.to_numeric(manifest["posicion"]).astype(int)     # a CSV gives it back as text
         fingerprint_table = read_plain_table(TABLE_BLOCK_1_FINGERPRINT, configuration)
         persisted_fingerprint = dict(zip(fingerprint_table["clave"], fingerprint_table["valor"].astype(str)))
-        self.raw_extract = self.read_the_raw_extract()
+        self.extract_summary = summary_of_the_extract(self.read_the_raw_extract(), configuration)
         current_fingerprint = self.fingerprint()
         changed = {key: (persisted_fingerprint.get(key, "(absent)"), value) for key, value in current_fingerprint.items()
                    if persisted_fingerprint.get(key) != value}
@@ -2360,10 +2485,6 @@ class PreparationBlock:
         for attribute, table_name in PERSISTED_RESULTS.items():
             sql_frame = read_plain_table(table_name, configuration)
             setattr(self, attribute, frame_from_sql(sql_frame, manifest[manifest["tabla"] == table_name]))
-        self.calendared_raw = self.fine_table.drop(columns=[configuration.discount_bucket_column, *STEP_1_4_ADDED_COLUMNS],
-                                                   errors="ignore")
-        self.validated_extract = None
-        self.leveled_raw = None
         self.origin = "sql"
         self.seconds["B1 resume_block_from_sql"] = time.time() - started - self.seconds.get("-- read_raw", 0.0)
         configuration.logger.doc(f"[{BLOCK_LABEL}] block 1 resumed from {configuration.table_prefix}{TABLE_BLOCK_1_FINE_TABLE} "
@@ -2495,8 +2616,7 @@ def write_plain_table(frame: pd.DataFrame, table_name: str, configuration: Confi
     """A table to SQL (replaced) or, without an engine, to a CSV in output_folder; no check is logged."""
     physical_name = f"{configuration.table_prefix}{table_name}"
     if configuration.sql_engine is not None:
-        frame.to_sql(physical_name, configuration.sql_engine, schema=configuration.sql_schema, if_exists="replace",
-                     index=False, chunksize=10_000)
+        write_frame_to_sql(frame, physical_name, configuration.sql_engine, configuration.sql_schema)
     else:
         os.makedirs(configuration.output_folder, exist_ok=True)
         frame.to_csv(os.path.join(configuration.output_folder, f"{physical_name}.csv"), index=False)

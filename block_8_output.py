@@ -1823,7 +1823,7 @@ STEP_8_5_OUTPUT = "one row per check · table sff_validacion"
 
 
 
-def validate_chain(raw: pd.DataFrame, results: dict, configuration: Config) -> pd.DataFrame:
+def validate_chain(extract_summary: dict, results: dict, configuration: Config) -> pd.DataFrame:
     """The checks across steps; the table of the validation."""
     configuration.log_step_start(STEP_8_5_LABEL, STEP_8_5_NAME, STEP_8_5_PURPOSE, STEP_8_5_ACTIONS, STEP_8_5_OUTPUT)
     check_log = []
@@ -1834,7 +1834,7 @@ def validate_chain(raw: pd.DataFrame, results: dict, configuration: Config) -> p
     configuration.log_action(STEP_8_5_LABEL, 1, "the money along the chain")
     time_series_due = results["time_series_rows"][due].fillna(0).sum() if results.get("time_series_rows") is not None else 0.0
     wiped = fine[S0_PIPELINE_USD_COLUMN].sum() - fine[due].sum()               # step 1.3: the pipeline not known yet
-    totals = {"extracto": raw[due].sum() - time_series_due - wiped, "tabla_fina": fine[due].sum(), "forecast_units": units[due].sum()}
+    totals = {"extracto": extract_summary["usd_vence"] - time_series_due - wiped, "tabla_fina": fine[due].sum(), "forecast_units": units[due].sum()}
     configuration.log_check(STEP_8_5_LABEL, check_log, "Σ USD due: extract (without time_series and the pipeline not known yet) = fine table = forecast units",
                             max(totals.values()) - min(totals.values()) <= configuration.money_tolerance,
                             failure_detail=f"totals differ: {totals}", context=f"${totals['extracto']:,.0f}")
@@ -1974,7 +1974,7 @@ def markdown_table(frame: pd.DataFrame, decimals: int = 2) -> str:
     return "\n".join([header, separator] + rows) + "\n"
 
 
-def build_report(raw: pd.DataFrame, results: dict, configuration: Config) -> str:
+def build_report(extract_summary: dict, results: dict, configuration: Config) -> str:
     """The markdown report, one chapter per block after the verdict; checked and written, with the tables of the
     verdicts and of the profile of the pipeline. Returns its text."""
     configuration.log_step_start(STEP_8_6_LABEL, STEP_8_6_NAME, STEP_8_6_PURPOSE, STEP_8_6_ACTIONS, STEP_8_6_OUTPUT)
@@ -1984,7 +1984,7 @@ def build_report(raw: pd.DataFrame, results: dict, configuration: Config) -> str
     record_the_verdict("B8", results, configuration)
     headline, chapters = [], []
     chapters.append(chapter_verdict(results, configuration))
-    chapters.append(chapter_data(raw, results, configuration))
+    chapters.append(chapter_data(extract_summary, results, configuration))
     chapters.append(chapter_rate(results, configuration, headline))
     chapters.append(chapter_price(results, configuration))
     chapters.append(chapter_states(results, configuration))
@@ -2002,7 +2002,7 @@ def build_report(raw: pd.DataFrame, results: dict, configuration: Config) -> str
                 charts[name] = path
     configuration.log_action(STEP_8_6_LABEL, 1, f"{len(charts)} charts drawn in {os.path.join(configuration.output_folder or '.', CHART_FOLDER)}: "
                                             + ", ".join(charts))
-    report_text = report_cover(raw, results, configuration, headline, summary_lines, charts) + "\n".join(chapters)
+    report_text = report_cover(extract_summary, results, configuration, headline, summary_lines, charts) + "\n".join(chapters)
     configuration.log_action(STEP_8_6_LABEL, 1, f"{len(chapters)} chapters written ({len(report_text):,} characters)")
 
     # [2] the check
@@ -2048,10 +2048,10 @@ def as_section(chapter_text: str) -> str:
 # THE CHAPTERS
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def report_cover(raw: pd.DataFrame, results: dict, configuration: Config, headline: list, summary_lines: list = (),
+def report_cover(extract_summary: dict, results: dict, configuration: Config, headline: list, summary_lines: list = (),
                  charts: dict = None) -> str:
     series = results["series"]
-    headline.insert(0, ("filas del extracto", f"{len(raw):,}"))
+    headline.insert(0, ("filas del extracto", f"{extract_summary['filas']:,}"))
     headline.insert(1, ("forecast series", f"{len(series):,}"))
     headline.insert(2, ("USD por predecir", f"${series['usd_por_predecir'].sum():,.0f}"))
     lines = ["# SFF · Informe de la ejecución",
@@ -2063,7 +2063,7 @@ def report_cover(raw: pd.DataFrame, results: dict, configuration: Config, headli
     return "\n".join(lines)
 
 
-def chapter_raw(raw: pd.DataFrame, results: dict, configuration: Config) -> str:
+def chapter_raw(extract_summary: dict, results: dict, configuration: Config) -> str:
     fine = results["fine_table"]
     boundaries = configuration.calendar_boundaries()
     closed = fine[configuration.period_col] < boundaries["current"]
@@ -2075,7 +2075,7 @@ def chapter_raw(raw: pd.DataFrame, results: dict, configuration: Config) -> str:
                 .reindex(ROLES_IN_ORDER).dropna(how="all").reset_index())
     checks = pd.DataFrame(configuration.check_history)
     lines = ["## 1 · El raw y cómo lo mejoramos", "",
-             f"El extracto tiene **{len(raw):,} filas × {len(raw.columns)} columnas**, de "
+             f"El extracto tiene **{extract_summary['filas']:,} filas × {extract_summary['columnas']} columnas**, de "
              f"{fine[configuration.period_col].min()} a {fine[configuration.period_col].max()}. "
              f"Cada columna tiene un rol declarado en la Config y el calendario se genera desde el mes en curso.", "",
              markdown_table(per_role, 0),
@@ -2447,10 +2447,10 @@ def chapter_verdict(results: dict, configuration: Config) -> str:
     return "\n".join(lines) + "\n"
 
 
-def chapter_data(raw: pd.DataFrame, results: dict, configuration: Config) -> str:
+def chapter_data(extract_summary: dict, results: dict, configuration: Config) -> str:
     """Chapter 1 · B1: the extract and what was corrected (the earlier chapter 1), and the profile of the pipeline."""
     lines = ["## 1 · B1 · Los datos: el extracto, lo que se corrigió y el perfil de la pipeline", "",
-             as_section(chapter_raw(raw, results, configuration))]
+             as_section(chapter_raw(extract_summary, results, configuration))]
     profile = configuration.data_profile
     if profile is not None and len(profile):
         view = lambda section, columns: profile[profile["seccion"] == section][columns]
@@ -2667,7 +2667,7 @@ BLOCK_LABEL = "B8"
 BLOCK_NAME = "OUTPUT AND CONTROL"
 BLOCK_MISSION = ("write, explain and validate the forecast without changing any number, so every number can be "
                  "followed back to the step and the row it comes from")
-BLOCK_READS = ("raw_extract", "fine_table", "forecast_units", "rated_units", "series_table", "series_rate",
+BLOCK_READS = ("extract_summary", "fine_table", "forecast_units", "rated_units", "series_table", "series_rate",
                "time_series_rows", "ladder", "series_estimate", "money_by_level", "pool_series", "pool_reference",
                "pool_dynamics", "portfolio_profile", "portfolio_dynamics", "backtest", "rate_box", "contract_check",
                "uplift_cells", "uplift_backtest", "uplift_verdict", "price_increases", "state_maturation",
@@ -2677,7 +2677,7 @@ BLOCK_GIVES = ("new_rows", "audit", "core", "core_legend", "forecast_series", "p
 
 def results_of_the_run(tables: dict) -> dict:
     """The tables of a run under the names the report, the validation and the tests read."""
-    renamed = {"calendared_raw": "raw", "series_table": "series"}
+    renamed = {"series_table": "series"}
     results = {renamed.get(name, name): value for name, value in tables.items()}
     if "series_exam" in tables:
         results["portfolio_exam"] = tables["series_exam"]["by_month"]
@@ -2738,12 +2738,12 @@ class OutputBlock:
         tables.update(new_rows=self.new_rows, audit=self.audit, core=self.core, core_legend=self.core_legend,
                       forecast_series=self.forecast_series, power_bi=self.power_bi)
         started = time.time()
-        self.validation = validate_chain(tables["raw_extract"], results_of_the_run(tables), configuration)
+        self.validation = validate_chain(tables["extract_summary"], results_of_the_run(tables), configuration)
         self.seconds["8.5 validation"] = time.time() - started
 
         tables.update(validation=self.validation)
         started = time.time()
-        self.report = build_report(tables["raw_extract"], results_of_the_run(tables), configuration)
+        self.report = build_report(tables["extract_summary"], results_of_the_run(tables), configuration)
         self.seconds["8.6 report"] = time.time() - started
         return self
 

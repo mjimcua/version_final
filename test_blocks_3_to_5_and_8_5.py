@@ -11,9 +11,9 @@ import pandas as pd
 
 from main import run
 from prediction import judged_horizon
-from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, PIPELINE_ORIGIN_COLUMN, PIPELINE_REAL, TRUTH_ROLES,
-                    UNITS_AT_DUE_COLUMN, UNITS_TODAY_COLUMN, WITH_DATES_COLUMN)
-from block_4_customer_states import StateMaturation, states_above_final
+from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, PIPELINE_ORIGIN_COLUMN, PIPELINE_REAL, ROLE_PROJECTION, TRUTH_ROLES,
+                    UNITS_AT_DUE_COLUMN, UNITS_TODAY_COLUMN, WITH_DATES_COLUMN, region_columns_of)
+from block_4_customer_states import StateMaturation, maturation_by_region, states_above_final
 from test_helpers import check, console_of, finish, synthetic_with, step_section
 
 
@@ -71,6 +71,8 @@ def test_steps_15_to_18() -> None:
     check("LICENCE BY LICENCE, the isolated renewals: mean ratio" in console and "std deviation between licences" in console
           and "histogram · the value of the isolated renewals by renewal ratio" in console,
           "the revaluation report reads the isolated renewals licence by licence: std deviation and ratio bands")
+    check("the maturation of every state by" in step_section(console, "4.1"),
+          "step 4.1 shows the maturation of every state by region, as a table and a chart")
     check("LO QUE RENUEVA CADA COMBINACIÓN DE ESTADOS DEL CLIENTE" in console and "REPARTO DE ESTADOS DEL CLIENTE" in console,
           "step 7.2 prints what every combination of states renews, and the distribution of the states (today, final, adjustment)")
     check("between SERIES" in console and "histogram · every series in the distribution" in console
@@ -263,6 +265,34 @@ def test_the_box_of_the_states() -> None:
           "the box says the final share it aimed at: dormant 15 % (dormant 5 % + dormant+softcancel 10 %)")
 
 
+def test_the_maturation_by_region() -> None:
+    print("M2 · the maturation by region of step 4.1: hand-made, an undated state, every number by hand")
+    configuration = hand_made_configuration()
+    region = region_columns_of(configuration)[0]
+    dormant = "dormant"
+    last_closed = configuration.calendar_boundaries()["current"] - 1
+    # the past: region A ends 10 % dormant, region B 20 %
+    history_a = hand_made_history(configuration, [({}, 90.0, 63.0), ({dormant: 1}, 10.0, 5.0)]).assign(**{region: "A"})
+    history_b = hand_made_history(configuration, [({}, 80.0, 56.0), ({dormant: 1}, 20.0, 10.0)]).assign(**{region: "B"})
+    # today, 3 months ahead: region A 5 % dormant (half its final share), region B 20 % (all of it)
+    future = hand_made_history(configuration, [({}, 95.0, 0.0), ({dormant: 1}, 5.0, 0.0)], months=1).assign(**{region: "A"})
+    future = pd.concat([future, hand_made_history(configuration, [({}, 80.0, 0.0), ({dormant: 1}, 20.0, 0.0)], months=1)
+                        .assign(**{region: "B"})], ignore_index=True)
+    future[configuration.period_col] = last_closed + 3
+    future[CALENDAR_ROLE_COLUMN] = ROLE_PROJECTION
+    fine = pd.concat([history_a, history_b, future], ignore_index=True)
+    box = StateMaturation(fine, last_closed, configuration)
+    table = maturation_by_region(fine, box, configuration)
+    today = table[(table["estado"] == dormant) & (table["vista"] == "hoy") & (table["meses_antes"] == 3)].set_index("region")
+    check(abs(today.loc["A", "cuota_final"] - 0.10) < 1e-12 and abs(today.loc["B", "cuota_final"] - 0.20) < 1e-12,
+          "the final share of every region comes from its closed months (A 10 %, B 20 %)")
+    check(abs(today.loc["A", "visible_del_final"] - 0.5) < 1e-12 and abs(today.loc["B", "visible_del_final"] - 1.0) < 1e-12,
+          "an undated state is seen TODAY: 3 months ahead, A shows half its final dormant (5 % of 10 %), B all of it")
+    check(abs(today.loc["cartera", "visible_del_final"] - (25 / 200) / (30 / 200)) < 1e-12,
+          "the portfolio line is the same reading on every region together")
+    check(set(table["vista"]) == {"hoy"}, "with no maturation columns there is no past curve, only the view of today")
+
+
 def test_the_maturation_is_valued_at_the_average_price() -> None:
     print("N · the maturation valued (step 7.2): what leaves a neutral row leaves at its average price")
     from block_7_exam_and_assembly import apply_the_maturation
@@ -449,6 +479,7 @@ if __name__ == "__main__":
     test_acquisition_simulation()
     test_the_level_of_the_acquisitions_is_aggregate()
     test_the_box_of_the_states()
+    test_the_maturation_by_region()
     test_the_maturation_is_valued_at_the_average_price()
     test_the_detector()
     test_a_projected_renewal_is_a_retention()

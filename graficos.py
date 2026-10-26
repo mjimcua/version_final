@@ -301,6 +301,49 @@ def draw_maturation_curve(results: dict, configuration: Config, path: str):
     return save(figure, path)
 
 
+# ─── 04.1 · the maturation of every state by region (drawn by step 4.1, shown on screen) ───
+REGION_COLOURS = (BLUE, ORANGE, AQUA, VIOLET, "#c9a227", "#d6336c", "#5f8f2e", "#7a5c3e")
+
+
+def draw_maturation_by_region(table: pd.DataFrame, box, configuration: Config, path: str) -> str:
+    """One panel per negative state, one line per region (the first region level) and the portfolio in grey: the
+    share of the final state already visible k months before due. A dated state shows its PAST curve (average of the
+    cohorts the box learns from); an undated one shows the pipeline as seen TODAY over the final share of its region,
+    dashed, because it is not a curve of the past. `table` is maturation_by_region of block_4_customer_states."""
+    states = list(dict.fromkeys(table["estado"]))
+    dated = set(configuration.maturation_dims)
+    figure, axes = new_figure(4.6 * len(states), 5.4, 1, len(states), sharey=True)
+    axes = np.atleast_1d(axes)
+    regions = [region for region in table["region"].drop_duplicates() if region != "cartera"]
+    for axis, state in zip(axes, states):
+        view = "pasado" if state in dated else "hoy"
+        of_state = table[(table["estado"] == state) & (table["vista"] == view)]
+        for region, colour in zip(regions, REGION_COLOURS):
+            line = of_state[of_state["region"] == region].sort_values("meses_antes")
+            final = line["cuota_final"].iloc[0] if len(line) else np.nan
+            axis.plot(line["meses_antes"], 100 * line["visible_del_final"], color=colour, linewidth=2.0,
+                      linestyle="-" if view == "pasado" else "--", marker="o", markersize=3.5,
+                      label=f"{region} (final {100 * final:.1f} %)")
+        portfolio = of_state[of_state["region"] == "cartera"].sort_values("meses_antes")
+        if len(portfolio):
+            axis.plot(portfolio["meses_antes"], 100 * portfolio["visible_del_final"], color=INK_MUTED, linewidth=1.4,
+                      linestyle=":", label=f"cartera (final {100 * portfolio['cuota_final'].iloc[0]:.1f} %)")
+        subtitle = ("curva del pasado: media de las cohortes cerradas" if view == "pasado"
+                    else "sin fechas en el extracto: la pipeline vista HOY")
+        axis.set_title(f"{state}\n{subtitle}", fontsize=10, color=INK, loc="left")
+        axis.set_xlabel("meses antes del vencimiento (k)", color=INK_SECONDARY)
+        axis.invert_xaxis()
+        axis.set_ylim(bottom=0)
+        axis.legend(fontsize=7.5, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=2)
+    axes[0].set_ylabel("% del estado final ya visible", color=INK_SECONDARY)
+    months = box.history_months
+    titles(figure, "La maduración de los estados del cliente por región",
+           f"Cuánto del estado final se ve k meses antes de vencer, por región. Las cohortes del pasado son "
+           f"{months[0]}..{months[-1]}. Para los estados sin fechas (línea discontinua) el pasado no se ve: es lo que "
+           f"se ve hoy en la pipeline sobre la cuota final de la región.")
+    return save(figure, path, top=0.88)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # 06-07 · ONE FORECAST SERIES FROM START TO END, AND ITS TECHNIQUES
 # ═══════════════════════════════════════════════════════════════════════════════════

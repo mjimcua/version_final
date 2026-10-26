@@ -82,7 +82,7 @@ def share(numerator: float, denominator: float) -> float:
 def compare_results(results: dict, configuration) -> pd.DataFrame:
     """One row per indicator: the real value, the synthetic one, and where the real one was read."""
     synthetic = {}
-    raw = results["raw"]
+    raw = results["fine_table"]
     closed = raw[raw["rol"].isin(TRUTH_ROLES)]
     units, renewed = configuration.pipeline_units_col, configuration.renewed_units_col
     usd, renewed_usd = configuration.pipeline_usd_col, configuration.renewed_usd_col

@@ -309,8 +309,7 @@ def dependency_order(steps: list) -> list:
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 # what block 1 (preparation, steps 1.1 to 1.7) leaves for the blocks after it
-PREPARATION_RESULTS = ("raw_extract", "validated_extract", "leveled_raw", "time_series_rows", "calendared_raw",
-                       "fine_table", "forecast_units", "series_table", "rated_units", "series_rate")
+PREPARATION_RESULTS = ("extract_summary", "time_series_rows", "fine_table", "forecast_units", "series_table", "rated_units", "series_rate")
 
 
 def sff_steps() -> list:

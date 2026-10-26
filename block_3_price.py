@@ -27,6 +27,7 @@ THE INTERFACE:
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
+import gc
 import time
 
 import numpy as np
@@ -226,8 +227,15 @@ def estimate_cell_uplifts(fine_table: pd.DataFrame, renewers: pd.DataFrame, conf
     numerator_column: the renewed USD of every row (_numerador_uplift: without the price increases).
     with_band=False skips the bootstrap (the exam of step 3.3 judges the uplift, not its band)."""
     renewed_units = configuration.renewed_units_col
-    cells = add_parent_ids(fine_table, configuration)[[UPLIFT_CELL_ID_COLUMN, "uplift_padre_id", "uplift_celda_mandatory_id"]]
-    cells = cells.drop_duplicates(UPLIFT_CELL_ID_COLUMN).reset_index(drop=True)
+    # one row per cell first, then its parent ids: the ids are made of the dims that define the cell, so every row
+    # of a cell has the same ones. (Until 26-oct-2026 the ids were made on a copy of the whole fine table, one per
+    # call: a transient copy of 1.3 GB with the extract of 1.1M rows, three times in step 3.3.)
+    uplift_mandatory = configuration.uplift_mandatory_dims or configuration.business_mandatory_dims
+    bucket = [configuration.discount_bucket_column] if configuration.discount_value_column else []
+    cell_columns = list(dict.fromkeys([UPLIFT_CELL_ID_COLUMN, *uplift_mandatory, *bucket]))
+    one_row_per_cell = fine_table[cell_columns].drop_duplicates(UPLIFT_CELL_ID_COLUMN)
+    cells = add_parent_ids(one_row_per_cell, configuration)[[UPLIFT_CELL_ID_COLUMN, "uplift_padre_id", "uplift_celda_mandatory_id"]]
+    cells = cells.reset_index(drop=True)
 
     def level(group_column):
         grouped = renewers.groupby(group_column)
@@ -1470,7 +1478,10 @@ BLOCK_LABEL = "B3"
 BLOCK_NAME = "PRICE"
 BLOCK_MISSION = "at what price the renewers renew (the uplift of every row), the path that predicts it best, and its band"
 BLOCK_READS = ("fine_table",)
-BLOCK_GIVES = ("uplift_cells", "uplift_state_factors", "contract_check", "price_increases", "uplift_basis",
+# uplift_basis (the renewer rows, the history of the uplift, the price monitor) is read by step 3.2 only: it stays
+# inside the block and is released after 3.2, not given to the pipeline (until 26-oct-2026 it was given, and the
+# renewer rows stayed in memory the whole run)
+BLOCK_GIVES = ("uplift_cells", "uplift_state_factors", "contract_check", "price_increases",
                "uplift_homogeneity", "uplift_backtest", "uplift_verdict")
 
 
@@ -1501,6 +1512,8 @@ class PriceBlock:
 
         started = time.time()
         self.uplift_homogeneity = diagnose_the_price(fine_table, self.uplift_basis, self.contract_check, configuration)
+        self.uplift_basis = None          # read by 3.2 only: released before the exam of 3.3 (see BLOCK_GIVES)
+        gc.collect()
         self.seconds["3.2 price_diagnostics"] = time.time() - started
 
         started = time.time()

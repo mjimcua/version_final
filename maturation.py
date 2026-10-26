@@ -84,7 +84,10 @@ class MaturationCurve:
         self.months = int(configuration.maturation_months)
         self.minimum = configuration.maturation_min_units
         units_column = configuration.pipeline_units_col
-        rows = add_level_keys(closed_rows, configuration)
+        rows = closed_rows                # read, not copied: the keys of the levels are built apart (memory, 26-oct-2026)
+        level_keys = {GROUP_LEVEL: join_columns(rows, group_dims(configuration)).to_numpy(),
+                      CELL_LEVEL: join_columns(rows, configuration.business_mandatory_dims).to_numpy(),
+                      PORTFOLIO_LEVEL: np.full(len(rows), PORTFOLIO_KEY, dtype=object)}
         in_state = is_in_state(rows, state)
         columns = configuration.maturation_columns_of(state)
         timing = rows[columns].fillna(0.0).to_numpy(dtype=float) * in_state[:, None]
@@ -96,7 +99,7 @@ class MaturationCurve:
         not_in_state_yet = units[:, None] - seen_from_the_end
         self.sums = {}
         for level in LEVELS:
-            keys = rows[level].to_numpy()
+            keys = level_keys[level]
             frame = pd.DataFrame(np.hstack([to_come, not_in_state_yet, units_in_state[:, None], seen_from_the_end]))
             frame["_key"] = keys
             grouped = frame.groupby("_key").sum()

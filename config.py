@@ -459,6 +459,56 @@ class ClosedMonthMeasure:
     core_column: str
 
 
+# ─── writing a large table without holding it twice ─────────────────────────────
+SQL_WRITE_SLICE_ROWS = 100_000          # rows per to_sql call (each call is sent in chunks of SQL_CHUNK_ROWS)
+SQL_CHUNK_ROWS = 10_000
+
+
+def periods_as_text(frame: pd.DataFrame) -> pd.DataFrame:
+    """The frame with its monthly Periods as text ("2026-09"); the other columns untouched. A copy only when there is
+    a Period to convert."""
+    period_columns = [name for name in frame.columns if isinstance(frame[name].dtype, pd.PeriodDtype)]
+    if not period_columns:
+        return frame
+    converted = frame.copy()
+    for column_name in period_columns:
+        converted[column_name] = converted[column_name].astype(str)
+    return converted
+
+
+def sql_types_of_sparse_text_columns(frame: pd.DataFrame, first_slice: pd.DataFrame) -> dict:
+    """The SQL type of the text columns that are empty in the first slice. The table is created by the first slice,
+    and pandas infers the type of a column from the values it sees: a column empty in the first slice would be created
+    as text even if it holds numbers or booleans further down. Its type is taken from the whole column instead."""
+    import sqlalchemy
+    sql_type_of = {"boolean": sqlalchemy.Boolean, "floating": sqlalchemy.Float, "integer": sqlalchemy.BigInteger,
+                   "mixed-integer-float": sqlalchemy.Float}
+    types = {}
+    for column_name in frame.columns:
+        if frame[column_name].dtype != object or first_slice[column_name].notna().any():
+            continue
+        inferred = pd.api.types.infer_dtype(frame[column_name], skipna=True)
+        if inferred in sql_type_of:
+            types[column_name] = sql_type_of[inferred]
+    return types
+
+
+def write_frame_to_sql(frame: pd.DataFrame, physical_name: str, engine, schema) -> None:
+    """Replace a SQL table with the frame, SQL_WRITE_SLICE_ROWS rows at a time (the first slice creates the table, the
+    others are appended). to_sql turns every value it sends into a Python object first: with the whole core at once
+    (1.1M rows × 95 columns) that was several GB on top of the core; by slices it is the slice only. The Periods
+    are written as text, slice by slice, so the frame is never copied whole."""
+    if frame.empty:
+        periods_as_text(frame).to_sql(physical_name, engine, schema=schema, if_exists="replace", index=False)
+        return
+    first_slice = periods_as_text(frame.iloc[:SQL_WRITE_SLICE_ROWS])
+    column_types = sql_types_of_sparse_text_columns(frame, first_slice)
+    for start in range(0, len(frame), SQL_WRITE_SLICE_ROWS):
+        slice_of_rows = first_slice if start == 0 else periods_as_text(frame.iloc[start:start + SQL_WRITE_SLICE_ROWS])
+        slice_of_rows.to_sql(physical_name, engine, schema=schema, if_exists="replace" if start == 0 else "append",
+                             index=False, chunksize=SQL_CHUNK_ROWS, dtype=column_types or None)
+
+
 def region_columns_of(configuration) -> list:
     """The region levels of the time_series universe, coarse to fine (the first mandatory dim if none is
     declared). Used by step 1.2 (it separates the universe) and step 6.1 (it projects it)."""
@@ -505,10 +555,10 @@ class Config:
 
     # ─── the columns of the raw, by role ────────────────────────────────────────────
     period_col: str = "period"                              # [CFG ORQ VER 1.1 1.2 1.3 1.4 1.5 1.6 1.7 2.2 2.4 2.5 2.6 2.7 3.1 3.2 3.3 4.1 5.1 6.1 7.1 7.2 7.3 8.1 8.2 8.3 8.5 8.6] the month of the row
-    pipeline_units_col: str = "total_tr_units"              # [CFG VER 1.2 1.3 1.4 1.5 1.6 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 5.1 6.1 7.1 7.2 7.3 8.1 8.2 8.3 8.6] subscriptions falling due
-    pipeline_usd_col: str = "total_tr_usd"                  # [CFG VER B1 1.2 1.3 1.4 1.5 1.6 3.1 3.2 4.1 5.1 7.1 7.2 7.3 8.1 8.3 8.5 8.6] their value at due date
-    renewed_units_col: str = "total_renewed_units"          # [CFG VER 1.2 1.3 1.5 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 6.1 7.1 7.3 8.1 8.2 8.3] subscriptions renewed
-    renewed_usd_col: str = "total_renewed_usd"              # [CFG VER 1.2 1.3 3.1 3.2 4.1 6.1 7.1 7.2 7.3 8.1 8.3 8.5 8.6] their value at renewal
+    pipeline_units_col: str = "total_tr_units"              # [CFG VER B1 1.1 1.2 1.3 1.4 1.5 1.6 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 5.1 6.1 7.1 7.2 7.3 8.1 8.2 8.3 8.6] subscriptions falling due
+    pipeline_usd_col: str = "total_tr_usd"                  # [CFG VER B1 1.1 1.2 1.3 1.4 1.5 1.6 3.1 3.2 4.1 5.1 7.1 7.2 7.3 8.1 8.3 8.5 8.6] their value at due date
+    renewed_units_col: str = "total_renewed_units"          # [CFG VER 1.1 1.2 1.3 1.5 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 6.1 7.1 7.3 8.1 8.2 8.3] subscriptions renewed
+    renewed_usd_col: str = "total_renewed_usd"              # [CFG VER 1.1 1.2 1.3 3.1 3.2 4.1 6.1 7.1 7.2 7.3 8.1 8.3 8.5 8.6] their value at renewal
     extra_measure_cols: list = field(default_factory=list)  # [CFG 1.4] other measures (reacquisitions, AUVs): declared, not used yet
     renewed_pipeline_usd_col: Optional[str] = None  # [CFG 1.2 3.1 3.2] the USD that was FALLING DUE of the contracts that RENEWED
                                                     # (built per licence, then summed): the exact base of the uplift.
@@ -535,7 +585,7 @@ class Config:
     isolated_tr_usd_renewed_105_110_col: Optional[str] = None  # [CFG] ... ratio in [1.05, 1.10)
     isolated_tr_usd_renewed_110_120_col: Optional[str] = None  # [CFG] ... ratio in [1.10, 1.20)
     isolated_tr_usd_renewed_ge120_col: Optional[str] = None    # [CFG] ... ratio ≥ 1.20 (the six add up to the isolated base)
-    flag_time_series_col: str = "flag_time_series"          # [CFG 1.2] states the rows of the time_series universe
+    flag_time_series_col: str = "flag_time_series"          # [CFG 1.1 1.2] states the rows of the time_series universe
 
     business_mandatory_dims: list = field(default_factory=list)       # [CFG VER 1.2 2.1 2.2 2.7 3.1 4.1 7.1 7.2] open the series and the uplift cell
     leveled_dims: dict = field(default_factory=dict)  # [CFG 1.2] mandatory dims that get a generated coarse level (step 1.2):
@@ -565,7 +615,7 @@ class Config:
     # the discount: one column, both sides (see the module header). None = no discount in the extract
     discount_value_column: Optional[str] = "discount"          # [CFG VER 1.2 1.4 3.1 3.2 3.3 5.1 7.2 8.3 8.6] the exact discount, a share (0.25 = 25 %)
     discount_bucket_edges: list = field(default_factory=lambda: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100])  # [CFG 1.4 5.1 8.6] in %
-    discount_bucket_column: str = "tramo_descuento"            # [CFG VER B1 1.4 3.1 3.2 5.1 7.2 8.3 8.6] the derived bucket (a dimension of the uplift cell)
+    discount_bucket_column: str = "tramo_descuento"            # [CFG VER 1.4 3.1 3.2 5.1 7.2 8.3 8.6] the derived bucket (a dimension of the uplift cell)
     sku_column: Optional[str] = None              # [CFG 3.2] the SKU (formula input for the price scenarios)
     ignore_cols: list = field(default_factory=list)   # [CFG] read by nobody; may be absent from the raw
 
@@ -765,6 +815,7 @@ class Config:
     # ─── step 4.1 · the maturation of the customer states ───
     maturation_min_units: float = 100.0           # [4.1] a cell (or its calendar month) needs this many units to measure itself
     maturation_history_months: int = 12           # [4.1 8.6] the final states are measured over the last N closed months
+    maturation_regions_shown: int = 8             # [4.1] the regions of the maturation by region (the largest by units due)
     mark_excess_warning_pp: float = 2.0           # [4.1 7.2] a future month whose state (dormant…) is TODAY this many points above
                                                   # its final share in the history: WARN (a state only grows, so the extract
                                                   # shows too much in the state, e.g. a fresh cohort set to dormant before its first use)
@@ -998,17 +1049,11 @@ class Config:
                                    "not written: an earlier check of this step failed")
             return
 
-        persisted_frame = frame.copy()
-        for column_name in persisted_frame.columns:
-            if isinstance(persisted_frame[column_name].dtype, pd.PeriodDtype):
-                persisted_frame[column_name] = persisted_frame[column_name].astype(str)
-
         write_start_time = time.time()
         if self.sql_engine is not None:
-            # chunks of 10,000 rows; with an engine created with fast_executemany=True (see main.py),
-            # pyodbc sends each chunk in one round trip instead of one INSERT per row
-            persisted_frame.to_sql(physical_name, self.sql_engine, schema=self.sql_schema,
-                                   if_exists="replace", index=False, chunksize=10_000)
+            # by slices of SQL_WRITE_SLICE_ROWS rows, each sent in chunks of 10,000; with an engine created with
+            # fast_executemany=True (see main.py), pyodbc sends each chunk in one round trip
+            write_frame_to_sql(frame, physical_name, self.sql_engine, self.sql_schema)
             qualified_name = f"{self.sql_schema}.{physical_name}" if self.sql_schema else physical_name
             rows_read_back = int(pd.read_sql(f"SELECT COUNT(*) AS row_count FROM {qualified_name}",
                                              self.sql_engine)["row_count"].iloc[0])
@@ -1016,15 +1061,15 @@ class Config:
         else:
             os.makedirs(self.output_folder, exist_ok=True)
             destination = os.path.join(self.output_folder, f"{physical_name}.csv")
-            persisted_frame.to_csv(destination, index=False)
+            periods_as_text(frame).to_csv(destination, index=False)
             rows_read_back = len(pd.read_csv(destination))
         elapsed_seconds = time.time() - write_start_time
 
         self.written_tables[table_name] = frame
         self.log_check(step_label, check_log, f"table {physical_name} written and read back",
-                       rows_read_back == len(persisted_frame),
-                       failure_detail=f"{len(persisted_frame):,} rows written but {rows_read_back:,} read back from {destination}",
-                       context=f"{rows_read_back:,} rows × {len(persisted_frame.columns)} columns → "
+                       rows_read_back == len(frame),
+                       failure_detail=f"{len(frame):,} rows written but {rows_read_back:,} read back from {destination}",
+                       context=f"{rows_read_back:,} rows × {len(frame.columns)} columns → "
                                f"{destination} ({elapsed_seconds:.1f}s)")
 
     def show_query(self, step_label: str, what: str, sql: str) -> None:

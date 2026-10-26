@@ -209,6 +209,5 @@ def draw_without_stopping(draw, step_label: str, configuration: Config):
     except Exception as error:
         import matplotlib.pyplot as plt
         plt.close("all")
-        configuration.logger.doc(f"[{step_label}] chart of the time_series universe not drawn: "
-                                 f"{type(error).__name__}: {error}")
+        configuration.logger.doc(f"[{step_label}] chart not drawn: {type(error).__name__}: {error}")
         return None

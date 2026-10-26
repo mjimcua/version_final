@@ -43,8 +43,8 @@ def term_configuration(term_column: str = "term"):
 
 def wiped_by_term(orchestrator) -> dict:
     """Units due in the extract and after the calendar, from 2027-09 on, per term."""
-    calendared = orchestrator.context["calendared_raw"]
-    late = calendared[calendared["period"] >= pd.Period("2027-09", "M")]
+    fine = orchestrator.context["fine_table"]
+    late = fine[fine["period"] >= pd.Period("2027-09", "M")]
     return late.groupby("term").agg(extract=("s0_vencen_unidades", "sum"), after=("total_tr_units", "sum")).to_dict("index")
 
 
@@ -57,7 +57,7 @@ def test_the_term_column() -> None:
           and wiped["3 year"]["after"] == wiped["3 year"]["extract"] > 0,
           "the 1-year pipeline from 2027-09 is wiped, the 3-year one is kept")
     check("rows wiped per term: {'1 year':" in console, "step 1.3 says which terms it wiped")
-    check({"term", "term_level_1"} <= set(orchestrator.context["calendared_raw"].columns),
+    check({"term", "term_level_1"} <= set(orchestrator.context["fine_table"].columns),
           "the term keeps its name in every step; its generated level is next to it")
     results = {}
     console = console_of(lambda: results.update(Orchestrator(term_configuration()).run()))

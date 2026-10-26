@@ -8,9 +8,9 @@ problem of the column contract or of the months stops the run naming itself.
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import pandas as pd
 
-from block_1_preparation import validate_raw
+from block_1_preparation import READ_TOTAL_LABEL, READ_UNIVERSE_RENEWALS, READ_UNIVERSE_TIME_SERIES, read_summary, validate_raw
 from test_helpers import check, check_stops, console_of, console_of_failure, count_status, finish, synthetic_with
-from config import ROLE_PROJECTION, ROLE_TEST, ROLE_TRAIN
+from config import CALENDAR_ROLE_COLUMN, ROLE_PROJECTION, ROLE_TEST, ROLE_TRAIN
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -115,9 +115,43 @@ def test_the_months() -> None:
           "a month with no row is reported as a warning, not a stop")
 
 
+def test_the_read_summary() -> None:
+    print("E · the summary of what was read (action 7): rows, units and dollars of pipeline")
+    configuration = synthetic_with()
+    raw = configuration.read_raw()
+    console = console_of(lambda: validate_raw(raw, configuration))
+    check("▸ 7. read:" in console and "units and $" in console and "falling due" in console,
+          "the step says how many rows, units and dollars of pipeline it read")
+    validated = validate_raw(raw, configuration)
+    summary = read_summary(validated, configuration)
+    flag = configuration.flag_time_series_col
+    renewal_rows = raw[raw[flag] != 1] if flag in raw.columns else raw
+    renewals = summary[summary["universo"] == READ_UNIVERSE_RENEWALS].set_index(CALENDAR_ROLE_COLUMN)
+    total = renewals.loc[READ_TOTAL_LABEL]
+    check(int(total["filas"]) == len(renewal_rows)
+          and abs(total["unidades_vencen"] - renewal_rows[configuration.pipeline_units_col].fillna(0).sum()) < 1e-6
+          and abs(total["usd_vence"] - renewal_rows[configuration.pipeline_usd_col].fillna(0).sum()) < 1e-3,
+          "the total of the renewal universe is the rows, units and USD due of the raw")
+    by_role = renewals.drop(index=READ_TOTAL_LABEL)
+    check(set(by_role.index) <= {ROLE_TRAIN, ROLE_TEST, ROLE_PROJECTION}
+          and int(by_role["filas"].sum()) == int(total["filas"])
+          and abs(by_role["usd_vence"].sum() - total["usd_vence"]) < 1e-3,
+          "the calendar roles split the total: their rows and USD due add up to it")
+    time_series_raw = raw.assign(**{flag: 0}).head(50).assign(**{flag: 1})
+    time_series_raw[configuration.pipeline_units_col] = None
+    time_series_raw[configuration.pipeline_usd_col] = None
+    with_time_series = validate_raw(pd.concat([raw.assign(**{flag: 0}), time_series_raw], ignore_index=True), configuration)
+    universes = read_summary(with_time_series, configuration)
+    time_series_total = universes[(universes["universo"] == READ_UNIVERSE_TIME_SERIES)
+                                  & (universes[CALENDAR_ROLE_COLUMN] == READ_TOTAL_LABEL)].iloc[0]
+    check(int(time_series_total["filas"]) == 50 and time_series_total["usd_vence"] == 0,
+          "the time_series rows go apart, with no pipeline (a null counts as 0)")
+
+
 if __name__ == "__main__":
     test_the_synthetic_raw_fits()
     test_the_column_contract()
     test_the_months()
     test_the_log()
+    test_the_read_summary()
     finish()

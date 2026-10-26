@@ -26,11 +26,13 @@ import time
 import numpy as np
 import pandas as pd
 
-from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, Config, DUE_UNITS_AT_DUE_COLUMN, ROLE_TEST,
+from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, Config, DUE_UNITS_AT_DUE_COLUMN, ROLE_PROJECTION, ROLE_TEST,
                     SERIES_ID_COLUMN, UNITS_AT_DUE_COLUMN, UNITS_TODAY_COLUMN, WITH_DATES_COLUMN, join_columns,
-                    negative_states, state_combination)
+                    negative_states, region_columns_of, state_combination)
+from graficos import draw_maturation_by_region
 from maturation import (CELL_LEVEL, GROUP_LEVEL, MaturationCurve, curve_history, examine_the_curve, group_dims,
                         is_in_state, visible_units)
+from time_series_charts import chart_path, draw_without_stopping
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -86,9 +88,23 @@ from maturation import (CELL_LEVEL, GROUP_LEVEL, MaturationCurve, curve_history,
 # Actions (logged as they are done):
 #   1. the box: the closed months it learns from, the states with a curve and the states with a historical share
 #   2. the curve of every dated state and its exam on the exam months
-#   3. what every combination of states renews in the closed months it learns from
-#   4. check the box                                                   checks 1-2
-#   5. count the checks; stop if any failed
+#   3. the maturation of every state by region (the first region level), as a table and a chart: one line per region
+#   4. what every combination of states renews in the closed months it learns from
+#   5. check the box                                                   checks 1-2
+#   6. count the checks; stop if any failed
+#
+# THE MATURATION BY REGION (action 3, since 26-oct-2026). For every negative state and every value of the first region
+# level, the share of the final state already visible k months before due (k = maturation_months … 0):
+#   · a DATED state (maturation_dims, softcancel): the PAST curve, the average of the cohorts the box learns from
+#     (the last maturation_history_months closed months), weighted by units: Σ V_k / Σ M per region. At k = 0 it is
+#     100 %: the whole final state is seen when the licence falls due.
+#   · an UNDATED state (dormant, not_installed): the past cannot be seen, the extract keeps only the last state. What
+#     can be seen is the pipeline TODAY: of the units due k months ahead, the share already in the state, over the
+#     final share of the region in the closed months. It is a picture of today, not an average of the past; the
+#     forecast takes the historical final share for these states.
+#   The dated states get the view of today too, in the table, to compare it with their past curve.
+#   The first region level is region_columns_of(configuration)[0]; at most maturation_regions_shown regions (Config),
+#   the largest by units due.
 #
 # Checks (logged as they are made, numbered, at the level of their status):
 #    1. the box learns only from closed months up to the last closed one
@@ -105,6 +121,7 @@ STEP_4_1_PURPOSE = ("predict how many units of every future month will carry a n
                 "exam (step 7.1) call; here, what it learns and how well its curve did")
 STEP_4_1_ACTIONS = ["the box: the closed months it learns from, the states with a curve and the states with a historical share",
                 "the curve of every dated state and its exam on the exam months",
+                "the maturation of every state by region (first region level): table and chart, one line per region",
                 "what every combination of states renews in the closed months it learns from",
                 "check the box (checks 1-2)",
                 "count the checks; stop if any failed"]
@@ -116,6 +133,8 @@ LEVEL_GROUP, LEVEL_CELL, LEVEL_PORTFOLIO = "grupo", "celda", "cartera"
 LEVEL_NO_HISTORY = "sin_historia"                # no closed month of the calendar month: nothing moves
 MATURATION_EXAM_HORIZONS = (1, 3, 6, 12)         # the horizons the curve is examined at (plus the backtest's)
 PORTFOLIO_KEY = "cartera"
+VIEW_PAST, VIEW_TODAY = "pasado", "hoy"          # the past curve (dated states) · the pipeline as seen today
+MATURATION_BY_REGION_CHART = "04_1_maduracion_por_region"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -149,6 +168,7 @@ class StateMaturation:
         self.history_months = sorted(self.history[configuration.period_col].unique()) if len(self.history) else []
         self.curves = {}
         self.curve_exams = {}             # step 4.1: the exam of the curve of every dated state (the verdict reads it)
+        self.maturation_by_region = None  # step 4.1: the maturation of every state by region (maturation_by_region)
         self.mix_units, self.mix_total, self.combination_sums = {}, {}, {}
         self.combinations_with_state = []
         if self.identity or self.history.empty:
@@ -163,7 +183,11 @@ class StateMaturation:
         combination, at the three levels (group, cell, portfolio)."""
         configuration = self.configuration
         units_column = configuration.pipeline_units_col
-        history = self.history.copy()
+        # only the columns the mix reads (not a copy of the whole history: memory, 26-oct-2026)
+        needed = list(dict.fromkeys([configuration.period_col, *self.states, *self.group_columns,
+                                     *configuration.business_mandatory_dims, units_column, configuration.pipeline_usd_col,
+                                     configuration.renewed_units_col, configuration.renewed_usd_col]))
+        history = self.history[needed].copy()
         history["_combinacion"] = state_combination(history, self.states)
         history["_mes"] = history[configuration.period_col].map(lambda month: month.month)
         history[LEVEL_GROUP] = join_columns(history, self.group_columns)
@@ -356,12 +380,15 @@ def learn_the_maturation(fine_table: pd.DataFrame, configuration: Config) -> Sta
     box.curve_exams = show_maturation_curves(fine_table, configuration)
     curve_exams = sorted({int(h) for summary in box.curve_exams.values() for h in summary["h"]})
 
-    # [3] what every combination renews
-    configuration.log_action(STEP_4_1_LABEL, 3, "what every combination of states renews in the closed months the box learns from")
+    # [3] the maturation of every state by region
+    box.maturation_by_region = show_maturation_by_region(fine_table, box, configuration)
+
+    # [4] what every combination renews
+    configuration.log_action(STEP_4_1_LABEL, 4, "what every combination of states renews in the closed months the box learns from")
     show_what_every_combination_renews(box, configuration)
 
-    # [4] the checks
-    configuration.log_action(STEP_4_1_LABEL, 4, "checking the box")
+    # [5] the checks
+    configuration.log_action(STEP_4_1_LABEL, 5, "checking the box")
     last_learned = box.history_months[-1] if box.history_months else None
     configuration.log_check(STEP_4_1_LABEL, check_log, "the box learns only from closed months up to the last closed one",
                             last_learned is None or last_learned <= last_closed,
@@ -375,8 +402,8 @@ def learn_the_maturation(fine_table: pd.DataFrame, configuration: Config) -> Sta
                             context=f"{len(box.curves)} dated states" + (f" · exam of the curve at h = "
                                                                        f"{sorted(curve_exams)}" if curve_exams else ""))
 
-    # [5] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_4_1_LABEL, 5, "counting the checks")
+    # [6] the count of the checks; stop if anything failed
+    configuration.log_action(STEP_4_1_LABEL, 6, "counting the checks")
     configuration.log_check_summary(STEP_4_1_LABEL, STEP_4_1_NAME, check_log)
     return box
 
@@ -424,6 +451,112 @@ def show_maturation_curves(fine_table: pd.DataFrame, configuration: Config) -> d
             + (": the curve is what the forecast needs" if worst < seen_gap else ": the curve does not beat the states seen; look at it"))
     doc(f"[{STEP_4_1_LABEL}] ══════════ FIN DE LA MADURACIÓN DE LOS ESTADOS DEL CLIENTE ══════════")
     return exams_of_states
+
+
+# ─── action 3: the maturation of every state by region ──────────────────────────
+def maturation_by_region(fine_table: pd.DataFrame, box: StateMaturation, configuration: Config) -> pd.DataFrame:
+    """The maturation of every negative state by region (the first region level): one row per state, view, region
+    and k (months before due), with
+
+        visible_del_final   the share of the final state already visible k months before due
+        cuota_final         the final share of the state in the region (closed months the box learns from)
+        unidades            the units behind the value (the units in the final state for the past view, the units due
+                            k months ahead for the view of today)
+
+    view "pasado" (dated states only): Σ V_k / Σ M over the cohorts the box learns from, V_k the units already in the
+    state k months or more before due, M the units in the state at the end.
+    view "hoy" (every state): of the units due k months after the last closed month, the share in the state today,
+    over the final share of the region. k = 1 … maturation_months (k = 0 is a closed month).
+    The region "cartera" is the whole portfolio. Empty when the box learned nothing."""
+    columns = ["estado", "vista", "region", "meses_antes", "visible_del_final", "cuota_final", "unidades"]
+    if box.identity or box.history.empty:
+        return pd.DataFrame(columns=columns)
+    period, units_column = configuration.period_col, configuration.pipeline_units_col
+    region_column = region_columns_of(configuration)[0]
+    months = int(configuration.maturation_months)
+    history = box.history
+
+    # the regions shown: the largest by units due in the closed months the box learns from
+    units_by_region = history.groupby(region_column)[units_column].sum().sort_values(ascending=False)
+    regions = list(units_by_region.index[:configuration.maturation_regions_shown])
+
+    # the pipeline as seen today: the future rows of the extract, k months after the last closed month
+    future = fine_table[(fine_table[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION) & (fine_table[units_column] > 0)]
+    months_ahead = future[period].map(lambda month: (month - box.as_of).n)
+    future = future[(months_ahead >= 1) & (months_ahead <= months)]
+    months_ahead = months_ahead[future.index]
+
+    records = []
+    for state in box.states:
+        history_in_state = history[units_column].to_numpy(dtype=float) * is_in_state(history, state)
+        future_in_state = future[units_column].to_numpy(dtype=float) * is_in_state(future, state)
+        for region in regions + [PORTFOLIO_KEY]:
+            in_region = (np.ones(len(history), dtype=bool) if region == PORTFOLIO_KEY
+                         else (history[region_column] == region).to_numpy())
+            units_due = float(history.loc[in_region, units_column].sum())
+            units_final = float(history_in_state[in_region].sum())
+            final_share = units_final / units_due if units_due > 0 else np.nan
+
+            # the past curve of a dated state: Σ V_k / Σ M
+            if state in configuration.maturation_dims:
+                for k in range(months + 1):
+                    visible = float(visible_units(history[in_region], state, k, configuration).sum())
+                    records.append((state, VIEW_PAST, region, k, visible / units_final if units_final > 0 else np.nan,
+                                    final_share, units_final))
+
+            # the view of today: the share in the state k months ahead, over the final share
+            future_in_region = (np.ones(len(future), dtype=bool) if region == PORTFOLIO_KEY
+                                else (future[region_column] == region).to_numpy())
+            for k in range(1, months + 1):
+                at_k = future_in_region & (months_ahead == k).to_numpy()
+                due_at_k = float(future.loc[at_k, units_column].sum())
+                share_today = float(future_in_state[at_k].sum()) / due_at_k if due_at_k > 0 else np.nan
+                records.append((state, VIEW_TODAY, region, k,
+                                share_today / final_share if final_share and final_share > 0 else np.nan,
+                                final_share, due_at_k))
+    return pd.DataFrame(records, columns=columns)
+
+
+def show_maturation_by_region(fine_table: pd.DataFrame, box: StateMaturation, configuration: Config) -> pd.DataFrame:
+    """Action 3 on screen: for every state, the table k × region of the share of the final state already visible (the
+    past curve for a dated state, the view of today for an undated one) with the final share of every region, and one
+    chart with a panel per state and a line per region. Returns the long table (maturation_by_region)."""
+    doc = configuration.logger.doc
+    region_column = region_columns_of(configuration)[0]
+    table = maturation_by_region(fine_table, box, configuration)
+    configuration.log_action(STEP_4_1_LABEL, 3, f"the maturation of every state by {region_column}: "
+                                                f"{table['region'].nunique() - 1 if len(table) else 0} regions and the portfolio")
+    if table.empty:
+        doc(f"[{STEP_4_1_LABEL}] no maturation by region: the box learned nothing (identity box or no closed month)")
+        return table
+    for state in box.states:
+        view = VIEW_PAST if state in configuration.maturation_dims else VIEW_TODAY
+        of_state = table[(table["estado"] == state) & (table["vista"] == view)]
+        if of_state.empty:
+            continue
+        if view == VIEW_PAST:
+            doc(f"[{STEP_4_1_LABEL}] {state} · the PAST curve by {region_column}: of the final {state}, the % already "
+                f"visible k months before due (average of the cohorts {box.history_months[0]}..{box.history_months[-1]}, "
+                f"weighted by units); last row: the final share of the state in the region")
+        else:
+            doc(f"[{STEP_4_1_LABEL}] {state} · no dates in the extract, so no past curve: the pipeline TODAY by {region_column}, "
+                f"the % of the final {state} already visible in the units due k months ahead (share in the state today "
+                f"over the final share of the region in {box.history_months[0]}..{box.history_months[-1]}); "
+                f"last row: that final share")
+        shown = of_state.pivot(index="meses_antes", columns="region", values="visible_del_final").sort_index(ascending=False)
+        shown = (100 * shown).round(1)
+        final_row = (100 * of_state.groupby("region")["cuota_final"].first()).round(1).rename("cuota_final_%")
+        shown = pd.concat([shown, final_row.to_frame().T])
+        shown.index = [f"k = {k}" if not isinstance(k, str) else k for k in shown.index]
+        ordered = [region for region in of_state["region"].drop_duplicates() if region != PORTFOLIO_KEY] + [PORTFOLIO_KEY]
+        shown = shown[ordered]
+        shown.columns.name = None
+        configuration.show_table(shown.reset_index().rename(columns={"index": "meses_antes"}))
+    path = chart_path(configuration, MATURATION_BY_REGION_CHART)
+    drawn = draw_without_stopping(lambda: draw_maturation_by_region(table, box, configuration, path), STEP_4_1_LABEL, configuration)
+    if drawn:
+        configuration.show_figure(STEP_4_1_LABEL, f"the maturation of every state by {region_column}", drawn)
+    return table
 
 
 def show_what_every_combination_renews(box: StateMaturation, configuration: Config) -> None:

@@ -101,6 +101,32 @@ pipeline futura (de 2026-09 a 2027-12).
 Las tres suman 1.023.291: cada fila del raw tiene exactamente un rol. Los meses cerrados (entrenamiento + examen) son
 739.695 filas.
 
+### Lo que se ha leído (acción 7, desde el 26-oct-2026)
+
+Una línea y una tabla con el volumen de lo leído: filas, unidades y USD de pipeline (lo que vence) y lo renovado. Va por
+universo (renovaciones y time_series) y por rol del calendario, con un total por universo. Ejemplo del parecido al real:
+
+"read: 385,154 rows · pipeline 4,665,715 units and $172,900,159 falling due in 61 months, of which 865,217 units and
+$35,531,110 from the current month on (15 months to forecast) · time_series universe: 11,218 rows, 68,063 units and
+$2,883,921 renewed (no pipeline)"
+
+| universo | rol | meses | filas | unidades_vencen | usd_vence | unidades_renovadas | usd_renovado |
+|---|---|---|---|---|---|---|---|
+| renovaciones | entrenamiento | 40 | 273.253 | 3.403.655 | 121.854.831 | 2.170.571 | 91.232.982 |
+| renovaciones | examen | 6 | 34.347 | 396.843 | 15.514.218 | 263.127 | 12.116.539 |
+| renovaciones | proyeccion | 15 | 66.336 | 865.217 | 35.531.110 | 21.673 | 983.602 |
+| renovaciones | total | 61 | 373.936 | 4.665.715 | 172.900.159 | 2.455.371 | 104.333.124 |
+| time_series | … | | | 0 | 0 | | |
+
+Cómo leerla:
+- **Es un recuento, no una comprobación.** Los valores se comprueban en el paso 1.2; aquí un nulo, o un texto que no es un
+  número, cuenta como 0.
+- **Lo renovado en los meses de proyección** son resultados adelantados que el paso 1.3 borra. Se muestran para ver qué
+  trae el extracto, no lo que usa el forecast.
+- **El USD de proyección no es el "dinero a predecir" del veredicto del bloque 1** (34,59 M$ en el parecido al real). Ese
+  sale después del calendario y de las rutas de las series (1.3–1.6).
+- **El universo time_series no tiene pipeline:** solo trae lo que convirtió.
+
 ### Lo que se revisó en el paso 1.1
 
 | Hallazgo | Decisión |

@@ -52,8 +52,10 @@ def test_persist_and_resume() -> None:
     check(resumed.origin == "sql" and "STEP 1.1" not in console, "resume_block_from_sql() runs no step")
     check(all(same_frame(getattr(block, attribute), getattr(resumed, attribute)) for attribute in PERSISTED_RESULTS),
           "every persisted result comes back the same: " + ", ".join(PERSISTED_RESULTS))
-    check(same_frame(block.calendared_raw, resumed.calendared_raw),
-          "the calendared raw comes back as the fine table without the four columns of step 1.4")
+    check(block.extract_summary == resumed.extract_summary and block.extract_summary["filas"] > 0,
+          "the summary of the extract (rows, columns, units and USD due) is the same after resuming")
+    check(not any(hasattr(block, name) for name in ("raw_extract", "validated_extract", "leveled_raw", "calendared_raw")),
+          "the block keeps no copy of the extract: only the fine table and its summary stay in memory")
 
     whole = {}
     console_of(lambda: whole.update(Orchestrator(synthetic_with()).run()))
