@@ -1,0 +1,26 @@
+
+SELECT ano, total_usd, renovado_real_usd, esperado_usd, ingresos_ts_real_usd, ingresos_ts_usd,
+       esperado_ts_reentrada_usd, error_examen_usd, banda_tasa_usd, banda_precio_usd,
+       banda_tasa_y_precio_usd, banda_captacion_usd, banda_time_series_usd
+FROM dbo.sff_resumen_negocio
+WHERE ano >= 2025
+ORDER BY ano;
+
+
+
+SELECT period AS mes, forecast_status AS estado,
+       SUM(forecast_to_renew_USD) AS usd_vence,
+       SUM(forecast_renewed_USD) AS usd_renovado,
+       SUM(forecast_renewed_USD) / NULLIF(SUM(forecast_to_renew_USD), 0) AS tasa_usd,
+       SUM(forecast_renewed_units) / NULLIF(SUM(forecast_to_renew_units), 0) AS tasa_unidades,
+       SUM(forecast_renewed_USD_maturation_adj) AS ajuste_maduracion_usd
+FROM dbo.sff_nucleo
+WHERE forecast_universe = 'pipeline' AND origen_fila <> 'hueco'
+  AND period >= '2025-07' AND period <= '2026-12'
+GROUP BY period, forecast_status
+ORDER BY period;
+
+SELECT bloque, paso, pregunta, valor, referencia, veredicto
+FROM dbo.sff_veredicto_bloques
+WHERE bloque IN ('B3', 'B4', 'B7')
+ORDER BY bloque, paso;
