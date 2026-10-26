@@ -30,7 +30,7 @@ def test_the_order() -> None:
 def test_the_run() -> None:
     print("B · a step refused without its inputs; a whole run")
     pipeline = Orchestrator(synthetic_with())
-    check_stops(lambda: pipeline.run_step("forecast"), "run first", "a step without its inputs is refused, naming what to run first")
+    check_stops(lambda: pipeline.run_step("exam_and_assembly"), "run first", "a block without its inputs is refused, naming what to run first")
     console_of(pipeline.run)
     check("forecast_series" in pipeline.context and "report" in pipeline.context, "the whole run fills the catalogue")
 

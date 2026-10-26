@@ -1,7 +1,7 @@
 """
 prediction.py — How the rate of a forecast series is predicted, in ONE place.
 
-The forecast (step 20), the exam of every forecast series (step 19) and the audit tables (step 23)
+The forecast (step 7.2), the exam of every forecast series (step 7.1) and the audit tables (step 8.2)
 predict the rate of a forecast series the same way, so they all call these functions:
 
   1. predict_composition   the technique of the composition predicts its rate h months ahead
@@ -10,7 +10,7 @@ predict the rate of a forecast series the same way, so they all call these funct
                            credibility reference: (1 − z) × (logit reference level − logit
                            composition level); 0 when z = 1 or a level is missing
   3. shifted_rate          the prediction with the shift applied: the rate of the forecast series
-  4. band_quantiles        the error quantiles of the technique at the horizon (step 12; the
+  4. band_quantiles        the error quantiles of the technique at the horizon (step 2.6; the
                            nearest judged horizon beyond them; the default technique's, then ±z, if missing)
   5. rate_band             the interval of the rate: rate + quantile × binomial error with the
                            units due of the forecast series, clipped to [0, 1]

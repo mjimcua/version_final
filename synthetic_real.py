@@ -13,7 +13,7 @@ WHAT IT REPRODUCES (the real figure it was calibrated against, in brackets)
     discount (null when unknown), the sku, and the 17 measures
   · a COHORT simulation: what falls due in month t is what was bought (renewed or acquired) in t − term.
     So the pipeline of every month comes from the renewals of a year before, and the acquisitions are
-    what the simulation of step 17 has to reproduce
+    what the simulation of step 4.1 has to reproduce
   · the renewal rate: renewal type, term, band, region, product and partner effects; a random level per
     series that walks month to month (the techniques that follow a level win: holt_damped, ses, ma3);
     extra-binomial noise (φ ≈ 2); a portfolio level that rose in 2026 (2025: 0.63 → 2026: 0.67-0.69);

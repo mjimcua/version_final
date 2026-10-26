@@ -1,36 +1,45 @@
 """
 block_1_preparation.py — BLOCK 1 · PREPARATION: from the raw extract to the tables every prediction starts from.
 
-WHAT THE BLOCK DOES: it checks that the extract fits the Config and that its values can be computed with, gives
-every month its role, names every row by its contexts (series, unit, price cell), adds the rows of every forecast
-unit, decides the route of every series and prepares its renewal rate. It predicts nothing.
+MISSION: leave the extract verified and in the tables every prediction starts from. It predicts nothing; it runs once
+per run, and its results can be persisted and resumed.
 
-THE STEPS (each one keeps its number, its actions and its checks, as before 25-oct-2026, when they were one file each):
-  00  validate the raw         the extract fits the Config: columns with a role, months that hold the calendar
-  01  values and levels        the two universes, the values, the generated <column>_level_1
-  02  apply the calendar       the role of every month; the future must look like it has not started
-  03  fine table               every row with its ids: fs_id, fu_id, uplift_cell_id, the discount bucket
-  04  forecast units           the fine rows of every series in its month, added up
-  05  series and routes        the months of every series and how it will be treated
-  06  rate series              gaps, the rate of every unit, the support, own rate, error and sign of every series
+MECHANISM: the extract is checked against the Config (structure first, then values), the time_series universe is set
+apart, every month gets its role (what is not known yet is wiped, so the future looks as it will), every row is named
+by its contexts (series, unit, price cell), the rows of every forecast unit are added up, every series gets its route
+and its renewal rate is prepared.
+
+THE STEPS (each one keeps its actions, its checks and its text on screen; until 25-oct-2026 they were 00 to 06):
+  1.1  validate the raw         the extract fits the Config: columns with a role, months that hold the calendar
+  1.2  values and levels        the two universes, the values, the generated <column>_level_1; the chart of the
+                                time_series universe before any prediction
+  1.3  apply the calendar       the role of every month; the future must look like it has not started
+  1.4  fine table               every row with its ids: fs_id, fu_id, uplift_cell_id, the discount bucket
+  1.5  forecast units           the fine rows of every series in its month, added up
+  1.6  series and routes        the months of every series and how it will be treated
+  1.7  rate series              gaps, the rate of every unit, the support, own rate, error and sign of every series
+
+READS: the extract (read_raw of the Config) and the Config.
+GIVES: raw_extract, validated_extract, leveled_raw, time_series_rows, calendared_raw, fine_table, forecast_units,
+       series_table, rated_units, series_rate.
 
 THE INTERFACE:
   block = PreparationBlock(configuration).run()        every step, in order; the results stay in memory
   block.persist_block()                                 optional: the results to SQL (or CSV without an engine)
   block = PreparationBlock(configuration).resume_block_from_sql()   optional: the results back from SQL
-  Orchestrator(configuration).run(preparation=block)   the rest of the pipeline, from step 07, with this block
+  Orchestrator(configuration).run(preparation=block)   the rest of the pipeline, from block 2, with this block
 
   The results are attributes of the block (in memory unless persisted):
     raw_extract        the extract as read
-    validated_extract  step 00: the same rows, period as a monthly Period
-    leveled_raw        step 01: the renewal universe with its generated levels
-    time_series_rows   step 01: the time_series universe
-    calendared_raw     step 02: the role of every month, the s0_ columns
-    fine_table         step 03: every row with its ids
-    forecast_units     step 04: one row per series and month
-    series_table       step 05: one row per series with its route
-    rated_units        step 06: the units with the gap rows and the rate of every unit
-    series_rate        step 06: one row per series with its support, own rate, error and sign
+    validated_extract  step 1.1: the same rows, period as a monthly Period
+    leveled_raw        step 1.2: the renewal universe with its generated levels
+    time_series_rows   step 1.2: the time_series universe
+    calendared_raw     step 1.3: the role of every month, the s0_ columns
+    fine_table         step 1.4: every row with its ids
+    forecast_units     step 1.5: one row per series and month
+    series_table       step 1.6: one row per series with its route
+    rated_units        step 1.7: the units with the gap rows and the rate of every unit
+    series_rate        step 1.7: one row per series with its support, own rate, error and sign
 
 PERSIST AND RESUME:
   persist_block writes what the steps after the block read (time_series_rows, fine_table, forecast_units,
@@ -38,10 +47,10 @@ PERSIST AND RESUME:
   every column back its type when it is read) and the fingerprint (what the block was built from: the rows and the
   USD due of the extract, the current month, and the value of every field of the Config that the block reads).
   resume_block_from_sql reads them back, every column with its type and every table with its index, and reads the
-  extract again (steps 26 and 27 need it). It stops if the extract, the current month or a field of the Config the
+  extract again (steps 8.5 and 8.6 need it). It stops if the extract, the current month or a field of the Config the
   block reads has changed since it was persisted: the block would no longer be the one of this run.
   validated_extract and leveled_raw are not persisted: no step after the block reads them. calendared_raw is the fine
-  table without the four columns of step 03.
+  table without the four columns of step 1.4.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -66,15 +75,16 @@ from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, COLUMN_ROLE_IGNORE
                     UNIT_ID_COLUMN, UNKNOWN_DISCOUNT_BUCKET, UPLIFT_CELL_ID_COLUMN, discount_bucket_labels, is_one_year,
                     join_columns, parse_month, region_columns_of, roles_overview, steps_reading_each_field)
 from report_queries import calendar_query, roles_query
+from time_series_charts import draw_the_history_of_the_time_series, draw_without_stopping
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 00 · VALIDATE RAW  (until 25-oct-2026: step_00_validate_raw.py)
+# STEP 1.1 · VALIDATE RAW  (until 25-oct-2026: step_00_validate_raw.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The first look at the raw: does it fit the configuration?
 #
 # STRUCTURE, not content: the columns and the months. The values inside the measures
-# and the dimensions are step 01.
+# and the dimensions are step 1.2.
 #
 # Actions (logged as they are done):
 #   1. read the roles the Config declares
@@ -99,41 +109,41 @@ from report_queries import calendar_query, roles_query
 # Output: a copy of the raw, same rows and columns, with the period as a monthly Period.
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_00_LABEL = "00"
-STEP_00_NAME = "VALIDATE RAW"
-STEP_00_PURPOSE = ("check that the raw fits the configuration before reading any value: every column has a role "
+STEP_1_1_LABEL = "1.1"
+STEP_1_1_NAME = "VALIDATE RAW"
+STEP_1_1_PURPOSE = ("check that the raw fits the configuration before reading any value: every column has a role "
                 "and is there, and the months of the raw can hold the calendar (current month, exam, training)")
-STEP_00_ACTIONS = ["read the roles the Config declares",
+STEP_1_1_ACTIONS = ["read the roles the Config declares",
                 "compare the columns of the raw with them (checks 1-4)",
                 "read the months of the raw and fit the calendar to them (checks 5-10)",
                 "count the checks; stop if any failed",
                 "convert the period to a monthly Period",
                 "show the columns by role and the calendar, as tables"]
-STEP_00_OUTPUT = "the raw, same rows and columns, with the period as a monthly Period (nothing is written)"
+STEP_1_1_OUTPUT = "the raw, same rows and columns, with the period as a monthly Period (nothing is written)"
 
 
 def validate_raw(raw: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """Check the columns and the months of the raw against the Config, logging every action and check."""
-    configuration.log_step_start(STEP_00_LABEL, STEP_00_NAME, STEP_00_PURPOSE, STEP_00_ACTIONS, STEP_00_OUTPUT)
+    configuration.log_step_start(STEP_1_1_LABEL, STEP_1_1_NAME, STEP_1_1_PURPOSE, STEP_1_1_ACTIONS, STEP_1_1_OUTPUT)
     check_log = []
     period_column = configuration.period_col
 
     # [1] the roles the Config declares
     column_roles = configuration.column_roles()
-    configuration.log_action(STEP_00_LABEL, 1, f"the Config declares {len(column_roles)} columns in "
+    configuration.log_action(STEP_1_1_LABEL, 1, f"the Config declares {len(column_roles)} columns in "
                                             f"{len(set(column_roles.values()))} roles")
 
     # [2] the columns of the raw against the declared ones
-    configuration.log_action(STEP_00_LABEL, 2, f"the raw has {len(raw.columns)} columns and {len(raw):,} rows")
-    configuration.log_check(STEP_00_LABEL, check_log, "the raw has rows", not raw.empty,
+    configuration.log_action(STEP_1_1_LABEL, 2, f"the raw has {len(raw.columns)} columns and {len(raw):,} rows")
+    configuration.log_check(STEP_1_1_LABEL, check_log, "the raw has rows", not raw.empty,
                             failure_detail="the raw has no rows", context=f"{len(raw):,} rows")
 
     duplicated_columns = sorted(set(raw.columns[raw.columns.duplicated()]))     # a SQL join can repeat a name
-    configuration.log_check(STEP_00_LABEL, check_log, "no column name appears twice", not duplicated_columns,
+    configuration.log_check(STEP_1_1_LABEL, check_log, "no column name appears twice", not duplicated_columns,
                             failure_detail=f"duplicated column names in the raw: {duplicated_columns}")
 
     columns_without_role = [column_name for column_name in raw.columns if column_name not in column_roles]
-    configuration.log_check(STEP_00_LABEL, check_log, "every column of the raw has a role in the Config",
+    configuration.log_check(STEP_1_1_LABEL, check_log, "every column of the raw has a role in the Config",
                             not columns_without_role,
                             failure_detail=f"columns with no role in the Config: {columns_without_role} "
                                            f"(declare their role or add them to ignore_cols)",
@@ -141,9 +151,9 @@ def validate_raw(raw: pd.DataFrame, configuration: Config) -> pd.DataFrame:
 
     missing_columns = [column_name for column_name, role in column_roles.items()
                        if role != COLUMN_ROLE_IGNORE and column_name not in raw.columns
-                       and column_name not in configuration.generated_columns]       # made in step 01
-    configuration.log_check(STEP_00_LABEL, check_log, "every declared column is in the raw (ignored ones may be absent; "
-                            "the generated levels are made in step 01)",
+                       and column_name not in configuration.generated_columns]       # made in step 1.2
+    configuration.log_check(STEP_1_1_LABEL, check_log, "every declared column is in the raw (ignored ones may be absent; "
+                            "the generated levels are made in step 1.2)",
                             not missing_columns,
                             failure_detail=f"columns declared in the Config but missing from the raw: {missing_columns}")
 
@@ -152,18 +162,18 @@ def validate_raw(raw: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     if period_column in raw.columns and period_column not in duplicated_columns:
         raw_months, months_by_value = check_months(raw, configuration, check_log)
     else:
-        configuration.log_action(STEP_00_LABEL, 3, f"no usable '{period_column}' column: the months cannot be read")
-        configuration.log_not_evaluated(STEP_00_LABEL, check_log, "the months and the calendar",
+        configuration.log_action(STEP_1_1_LABEL, 3, f"no usable '{period_column}' column: the months cannot be read")
+        configuration.log_not_evaluated(STEP_1_1_LABEL, check_log, "the months and the calendar",
                                         f"no usable '{period_column}' column")
 
     # [4] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_00_LABEL, 4, "counting the checks")
-    configuration.log_check_summary(STEP_00_LABEL, STEP_00_NAME, check_log)
+    configuration.log_action(STEP_1_1_LABEL, 4, "counting the checks")
+    configuration.log_check_summary(STEP_1_1_LABEL, STEP_1_1_NAME, check_log)
 
     # [5] the period as a monthly Period: the month of every distinct value, already read in [3], mapped onto the rows
     validated = raw.copy()
     validated[period_column] = pd.PeriodIndex(validated[period_column].map(months_by_value), freq="M")
-    configuration.log_action(STEP_00_LABEL, 5, f"'{period_column}' converted to a monthly Period")
+    configuration.log_action(STEP_1_1_LABEL, 5, f"'{period_column}' converted to a monthly Period")
 
     # [6] what the raw is
     log_raw_report(validated, configuration, column_roles, raw_months)
@@ -178,7 +188,7 @@ def check_months(raw: pd.DataFrame, configuration: Config, check_log: list) -> t
 
     # [5] no row without a month
     rows_without_month = int(period_values.isna().sum())
-    configuration.log_check(STEP_00_LABEL, check_log, "every row has a month", rows_without_month == 0,
+    configuration.log_check(STEP_1_1_LABEL, check_log, "every row has a month", rows_without_month == 0,
                             failure_detail=f"{rows_without_month:,} rows with no {period_column}")
 
     # [6] every distinct value is a month (read once per distinct value)
@@ -190,12 +200,12 @@ def check_months(raw: pd.DataFrame, configuration: Config, check_log: list) -> t
             unparseable_values.append(distinct_value)
     raw_months = sorted(set(months_by_value.values()))
     months_text = f"{len(raw_months)} months, {raw_months[0]}..{raw_months[-1]}" if raw_months else "no month"
-    configuration.log_action(STEP_00_LABEL, 3, f"the months of the raw: {months_text}")
-    configuration.log_check(STEP_00_LABEL, check_log, f"every value of {period_column} is a month", not unparseable_values,
+    configuration.log_action(STEP_1_1_LABEL, 3, f"the months of the raw: {months_text}")
+    configuration.log_check(STEP_1_1_LABEL, check_log, f"every value of {period_column} is a month", not unparseable_values,
                             failure_detail=f"values that are not a month: {unparseable_values[:10]}",
                             context=months_text)
     if not raw_months:
-        configuration.log_not_evaluated(STEP_00_LABEL, check_log, "the calendar against the months of the raw",
+        configuration.log_not_evaluated(STEP_1_1_LABEL, check_log, "the calendar against the months of the raw",
                                         "no month could be read")
         return raw_months, months_by_value
 
@@ -203,15 +213,15 @@ def check_months(raw: pd.DataFrame, configuration: Config, check_log: list) -> t
     try:
         boundaries = configuration.calendar_boundaries()
     except ValueError as error:
-        configuration.log_check(STEP_00_LABEL, check_log, "current_month is declared", False, failure_detail=str(error))
-        configuration.log_not_evaluated(STEP_00_LABEL, check_log, "the calendar against the months of the raw",
+        configuration.log_check(STEP_1_1_LABEL, check_log, "current_month is declared", False, failure_detail=str(error))
+        configuration.log_not_evaluated(STEP_1_1_LABEL, check_log, "the calendar against the months of the raw",
                                         "no current month")
         return raw_months, months_by_value
-    configuration.log_check(STEP_00_LABEL, check_log, "current_month is declared", True, context=str(boundaries["current"]))
+    configuration.log_check(STEP_1_1_LABEL, check_log, "current_month is declared", True, context=str(boundaries["current"]))
 
     # [8] the current month is inside the raw
     first_month, last_month = raw_months[0], raw_months[-1]
-    configuration.log_check(STEP_00_LABEL, check_log, "the current month is inside the months of the raw",
+    configuration.log_check(STEP_1_1_LABEL, check_log, "the current month is inside the months of the raw",
                             first_month <= boundaries["current"] <= last_month,
                             failure_detail=f"current_month {boundaries['current']} is outside the months of the raw "
                                            f"({first_month}..{last_month}): the extract must carry the pipeline "
@@ -219,7 +229,7 @@ def check_months(raw: pd.DataFrame, configuration: Config, check_log: list) -> t
                             context=f"{boundaries['current']} in {first_month}..{last_month}")
 
     # [9] the exam leaves months to train
-    configuration.log_check(STEP_00_LABEL, check_log, "the calendar leaves months to train",
+    configuration.log_check(STEP_1_1_LABEL, check_log, "the calendar leaves months to train",
                             boundaries["test_start"] > first_month,
                             failure_detail=f"the exam starts at {boundaries['test_start']} and the raw starts at "
                                            f"{first_month}: no month to train (lower test_months)",
@@ -228,7 +238,7 @@ def check_months(raw: pd.DataFrame, configuration: Config, check_log: list) -> t
     # [08] a month with no row at all is worth a look, not a stop
     expected_months = pd.period_range(first_month, last_month, freq="M")
     months_without_rows = [str(month) for month in expected_months if month not in set(raw_months)]
-    configuration.log_check(STEP_00_LABEL, check_log, "every month between the first and the last has rows",
+    configuration.log_check(STEP_1_1_LABEL, check_log, "every month between the first and the last has rows",
                             not months_without_rows,
                             failure_detail=f"months with no row at all: {months_without_rows}", blocking=False)
     return raw_months, months_by_value
@@ -236,11 +246,11 @@ def check_months(raw: pd.DataFrame, configuration: Config, check_log: list) -> t
 
 def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles: dict, raw_months: list) -> None:
     """Action 6: the columns by role and the calendar, rows per role, as tables."""
-    configuration.log_action(STEP_00_LABEL, 6, "the columns of the raw, by role (every role of the Config, also the empty "
-                                            "ones, and the dimensions that get a generated level in step 01):")
+    configuration.log_action(STEP_1_1_LABEL, 6, "the columns of the raw, by role (every role of the Config, also the empty "
+                                            "ones, and the dimensions that get a generated level in step 1.2):")
     configuration.show_table(roles_overview(validated.columns, configuration))
 
-    configuration.logger.doc(f"[{STEP_00_LABEL}] the calendar of the Config on these months: "
+    configuration.logger.doc(f"[{STEP_1_1_LABEL}] the calendar of the Config on these months: "
                              f"{configuration.calendar_description()}")
     rows_per_role = pd.Series(configuration.role_of_months(validated[configuration.period_col])).value_counts()
     months_per_role = pd.Series(configuration.role_of_months(pd.Series(raw_months))).value_counts()
@@ -249,25 +259,30 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 01 · VALUES AND DIMENSION LEVELS  (until 25-oct-2026: step_01_values_and_levels.py)
+# STEP 1.2 · VALUES AND DIMENSION LEVELS  (until 25-oct-2026: step_01_values_and_levels.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The content of the raw: the two universes, the values, and the
 # dimensions with a generated level.
 #
-# CONTENT, not structure: step 00 already checked that the columns and the months fit the
+# CONTENT, not structure: step 1.1 already checked that the columns and the months fit the
 # configuration. This step reads what is inside, in three parts, as one step:
 #
-#   THE UNIVERSES   the rows flagged time_series (retail to subscription) carry only the region and
-#                   the result; the other dimensions and the pipeline are empty. They are separated
-#                   first, so every check below reads the renewal universe only. Step 21 receives
-#                   them at the end.
+#   THE UNIVERSES   the rows flagged time_series (retail to subscription) carry the RESULT only (renewed units
+#                   and USD: what converted; the pipeline is empty, nobody knows what they were worth before)
+#                   and, since 25-oct-2026, the dimensions of the series they will RENEW in (mandatory and
+#                   extra_renovacion): their re-entry next year is placed in those series. They are separated
+#                   first, so every check of the values reads the renewal universe only: the checks of the
+#                   pipeline, of the renewals against what fell due and of the flags do not apply to them. Only
+#                   their own checks do, and only the region blocks (the projection is made by region).
+#                   They take the generated levels too (the same groups as the renewal universe), and step
+#                   21 receives them at the end.
 #
 #   THE VALUES      money without nulls or negatives, renewals coherent with what fell due,
 #                   dimensions never empty, flags 0 / 1, discount as a share. Which months each
 #                   check looks at:
 #                     · the pipeline (units and USD falling due): every month, the future included
 #                     · the renewals: only the months BEFORE the current one. From the current month
-#                       on they are early results that step 02 wipes, so they are not checked.
+#                       on they are early results that step 1.3 wipes, so they are not checked.
 #
 #   THE LEVELS      some mandatory dimensions come with many values (a band, a term). The Config
 #                   declares them in leveled_dims ({column: "ordinal" | "nominal"}); the column keeps
@@ -276,7 +291,7 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
 #                   <column>_level_1 as a mandatory dim, right after its column, from the moment it
 #                   is built; this step only fills it, before the calendar, so every later step sees
 #                   the same columns. The ladder collapses the fine level first, then the coarse one
-#                   (step 07).
+#                   (step 2.1).
 #
 # HOW THE GROUPS ARE MADE (only the TRAINING months, taken from the calendar of the Config)
 #   1. the STANDARDISED rate of every value: renewed / expected, where expected = the rate of its cell
@@ -296,7 +311,7 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
 # series that will use the merge: merging them adds less bias than the noise it removes. With p = 0.64 and
 # a floor of 30, the threshold is 8.8 pp. level_merge_max_pp fixes another value (5 pp = the noise of a
 # series of about 90 contracts a month). A dimension that ends in a single group does not separate the
-# renewal rate: its level_1 is constant and its pass of the ladder merges nothing (step 07).
+# renewal rate: its level_1 is constant and its pass of the ladder merges nothing (step 2.1).
 #
 # THE JSON: the first run writes the groups to levels_path; every later run that finds the file USES it, so
 # the ids of the forecast series do not move from one month to the next. A dimension missing from the file
@@ -317,7 +332,8 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
 #   10. check the values the file knows
 #   11. the levels as tables (on screen in action 14)
 #   12. count the checks; stop if any failed
-#   13. report the money of the closed months
+#   13. report the money of the closed months; draw the time_series universe month by month (time_series_charts.py:
+#       evolution, volume, value per unit and level, before any prediction)
 #   14. show the criterion, the groups (rate per year), the values and the merge decisions, and the
 #       columns by role, as tables
 #
@@ -325,10 +341,11 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
 #   universes                      the time_series flag is 0 / 1
 #                                  every time_series row has every region level
 #                                  every closed time_series row has its units and value     (warning only)
+#                                  every time_series row has the dims of the series it renews in   (warning only)
 #   pipeline, every month          no nulls · no negatives (units and USD)
 #   renewals, closed months        no negatives (units and USD)
 #                                  how "no renewal" arrives: null or 0 (warning if null,
-#                                    with example rows shown as a table; step 02 reads a null as 0)
+#                                    with example rows shown as a table; step 1.3 reads a null as 0)
 #                                  units and USD are null together
 #                                  no renewal for free (units > 0, USD ≤ 0)
 #                                  no USD without units (USD > 0, units = 0)
@@ -339,21 +356,22 @@ def log_raw_report(validated: pd.DataFrame, configuration: Config, column_roles:
 #                                  no row falls due with units but USD = 0
 #                                  no row repeated in every column (a double load)
 #   levels (if declared)           no value of the extract is unknown to the file           (warning only)
+#                                  no value of the time_series rows is unknown to the file  (warning only)
 #
 # Output: (the raw of the renewal universe with <column>_level_1 for every leveled column, the time_series
 # rows). Without leveled_dims the renewal raw comes back with its rows and columns unchanged.
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_01_LABEL = "01"
-STEP_01_NAME = "VALUES AND DIMENSION LEVELS"
-STEP_01_PURPOSE = ("separate the time_series universe; check that the values inside the raw can be computed with "
+STEP_1_2_LABEL = "1.2"
+STEP_1_2_NAME = "VALUES AND DIMENSION LEVELS"
+STEP_1_2_PURPOSE = ("separate the time_series universe; check that the values inside the raw can be computed with "
                 "(money without nulls or negatives, renewals coherent with what fell due, dimensions never empty, "
                 "flags 0 / 1, discount as a share); and give every dimension declared in leveled_dims its coarse "
                 "level, <column>_level_1: its values grouped by their standardised renewal rate in the training "
                 "months, persisted in a JSON that later runs reuse so the forecast series keep their ids")
-STEP_01_ACTIONS = ["check the time_series flag and separate the two universes",
+STEP_1_2_ACTIONS = ["check the time_series flag and separate the two universes",
                 "scope the renewal checks: renewals are checked only in months before the current one "
-                "(from the current month on they are partial and step 02 wipes them)",
+                "(from the current month on they are partial and step 1.3 wipes them)",
                 "check the money: pipeline every month, renewals in closed months",
                 "check the dimensions and the timevarying flags",
                 "check the exact discount, if declared",
@@ -364,10 +382,10 @@ STEP_01_ACTIONS = ["check the time_series flag and separate the two universes",
                 "check the values the file knows",
                 "the levels as tables (on screen in action 14)",
                 "count the checks; stop if any failed",
-                "report the money of the closed months",
+                "report the money of the closed months; draw the time_series universe month by month",
                 "show the criterion, the groups (rate per year), the values and the merge decisions, and the "
                 "columns by role, as tables"]
-STEP_01_OUTPUT = "the renewal raw with <column>_level_1 · the time_series rows · the JSON of the groups"
+STEP_1_2_OUTPUT = "the renewal raw with <column>_level_1 · the time_series rows · the JSON of the groups"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # The only values a dichotomous column (timevarying, time_series flag) may carry.
@@ -378,15 +396,15 @@ RESIDUAL_GROUP = "residual"
 def validate_values_and_build_levels(validated: pd.DataFrame, configuration: Config) -> tuple:
     """The content of the raw: the two universes, the values and the generated levels.
 
-    INPUT:   the raw validated by step 00 · the Config (flags, measures, dimensions, discount, leveled_dims,
+    INPUT:   the raw validated by step 1.1 · the Config (flags, measures, dimensions, discount, leveled_dims,
              levels_path, level_merge_max_pp, support_floor, the calendar).
     OUTPUT:  (the renewal raw with <column>_level_1 for every leveled column, the time_series rows).
     RULES:   see the module header.
-    EDGE CASES: no time_series row → an empty frame, and step 21 only builds the total. No leveled_dims →
+    EDGE CASES: no time_series row → an empty frame, and step 6.1 builds an empty universe. No leveled_dims →
              actions 8-11 and 14 have nothing to do, nothing is written. A dimension with a single value →
              one group. All values below the floor → a single residual group.
     """
-    configuration.log_step_start(STEP_01_LABEL, STEP_01_NAME, STEP_01_PURPOSE, STEP_01_ACTIONS, STEP_01_OUTPUT)
+    configuration.log_step_start(STEP_1_2_LABEL, STEP_1_2_NAME, STEP_1_2_PURPOSE, STEP_1_2_ACTIONS, STEP_1_2_OUTPUT)
     check_log = []
 
     # [1] the two universes
@@ -395,23 +413,27 @@ def validate_values_and_build_levels(validated: pd.DataFrame, configuration: Con
     # [2-6] the values of the renewal universe
     closed_rows = check_the_values(renewal_raw, configuration, check_log)
 
-    # [7-11] the dimensions with a generated level
+    # [7-11] the dimensions with a generated level (the time_series rows take the same groups)
     leveled_raw, levels_evidence = build_the_levels(renewal_raw, configuration, check_log)
+    time_series_rows = fill_the_levels_of_the_time_series_rows(time_series_rows, levels_evidence, configuration, check_log)
 
     # [10] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_01_LABEL, 12, "counting the checks")
-    configuration.log_check_summary(STEP_01_LABEL, STEP_01_NAME, check_log)
+    configuration.log_action(STEP_1_2_LABEL, 12, "counting the checks")
+    configuration.log_check_summary(STEP_1_2_LABEL, STEP_1_2_NAME, check_log)
 
-    # [11] the money of the closed months, and the rate it implies (a null renewal counts as 0)
+    # [11] the money of the closed months, and the rate it implies (a null renewal counts as 0); the time_series
+    #      universe as a chart, before anything predicts it (step 6.1 draws the same chart with its prediction)
     report_the_closed_months(closed_rows, configuration)
+    draw_without_stopping(lambda: draw_the_history_of_the_time_series(time_series_rows, STEP_1_2_LABEL, configuration),
+                          STEP_1_2_LABEL, configuration)
 
     # [12] the evidence of the levels and the columns by role
     if levels_evidence is not None:
         show_the_evidence(*levels_evidence, configuration)
-        configuration.logger.doc(f"[{STEP_01_LABEL}] the columns by role, with the generated levels:")
+        configuration.logger.doc(f"[{STEP_1_2_LABEL}] the columns by role, with the generated levels:")
         configuration.show_table(roles_overview(leveled_raw.columns, configuration))
     else:
-        configuration.log_action(STEP_01_LABEL, 14, "no dimension declared in leveled_dims: no evidence to show")
+        configuration.log_action(STEP_1_2_LABEL, 14, "no dimension declared in leveled_dims: no evidence to show")
     return leveled_raw, time_series_rows
 
 
@@ -427,7 +449,7 @@ def separate_the_universes(validated: pd.DataFrame, configuration: Config, check
     flag_values = validated[flag_column]
     unexpected_values = [value for value in flag_values.dropna().unique() if value not in DICHOTOMOUS_VALUES]
     has_nulls = bool(flag_values.isna().any())
-    configuration.log_check(STEP_01_LABEL, check_log, f"{flag_column} is 0 / 1",
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"{flag_column} is 0 / 1",
                             not unexpected_values and not has_nulls,
                             failure_detail=f"{flag_column} must be 0 / 1: found {unexpected_values[:10]}"
                                            f"{' and nulls' if has_nulls else ''}",
@@ -437,13 +459,13 @@ def separate_the_universes(validated: pd.DataFrame, configuration: Config, check
     time_series_rows = validated[flagged].copy()
     renewal_raw = validated[~flagged].copy()
     region_columns = region_columns_of(configuration)
-    configuration.log_action(STEP_01_LABEL, 1, f"{int(flagged.sum()):,} time_series rows (retail to subscription) out of "
-                                            f"{len(validated):,}: they go to step 21 · {len(renewal_raw):,} rows of the "
+    configuration.log_action(STEP_1_2_LABEL, 1, f"{int(flagged.sum()):,} time_series rows (retail to subscription) out of "
+                                            f"{len(validated):,}: they go to step 7.3 · {len(renewal_raw):,} rows of the "
                                             f"renewal universe go on · region levels {region_columns}")
 
     missing_region = int(time_series_rows[region_columns].isna().any(axis=1).sum()) if len(time_series_rows) else 0
     finest_regions = time_series_rows[region_columns].drop_duplicates().shape[0] if len(time_series_rows) else 0
-    configuration.log_check(STEP_01_LABEL, check_log, "every time_series row has every region level", missing_region == 0,
+    configuration.log_check(STEP_1_2_LABEL, check_log, "every time_series row has every region level", missing_region == 0,
                             failure_detail=f"{missing_region:,} time_series rows without some region level",
                             context=f"{finest_regions} finest regions")
 
@@ -453,10 +475,27 @@ def separate_the_universes(validated: pd.DataFrame, configuration: Config, check
         missing_closed = int(time_series_rows.loc[closed, result_columns].isna().any(axis=1).sum())
     else:
         missing_closed = 0
-    configuration.log_check(STEP_01_LABEL, check_log, "every closed time_series row has its units and value",
+    configuration.log_check(STEP_1_2_LABEL, check_log, "every closed time_series row has its units and value",
                             missing_closed == 0,
                             failure_detail=f"{missing_closed:,} closed rows without units or value (read as 0)",
                             blocking=False)
+
+    # the dims of the series a time_series row renews in (its re-entry next year is placed there): the mandatory
+    # dims of the extract (the generated levels are filled below) and the extra_renovacion. A row without them can
+    # still be projected by region; it is a warning, never a stop
+    renewal_dims = [column_name for column_name in configuration.extract_mandatory_dims + list(configuration.extra_renovacion)
+                    if column_name in time_series_rows.columns]
+    empty = (time_series_rows[renewal_dims].isna() | (time_series_rows[renewal_dims].astype(str) == "")
+             if renewal_dims else pd.DataFrame(index=time_series_rows.index))
+    rows_without_dims = empty.any(axis=1) if renewal_dims else pd.Series(False, index=time_series_rows.index)
+    missing_by_dim = {column_name: int(count) for column_name, count in empty.sum().items()}
+    configuration.log_check(STEP_1_2_LABEL, check_log,
+                            "every time_series row has the dims of the series it renews in (mandatory and extra_renovacion)",
+                            not bool(rows_without_dims.any()),
+                            failure_detail=f"{int(rows_without_dims.sum()):,} time_series rows without some dim: "
+                                           + ", ".join(f"{column_name} {count:,}" for column_name, count in missing_by_dim.items()
+                                                       if count),
+                            blocking=False, context=f"{len(renewal_dims)} dims · {len(time_series_rows):,} rows")
     return renewal_raw, time_series_rows
 
 
@@ -469,18 +508,18 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
     the renewal universe. Returns the rows of the closed months (action 13 reports their money)."""
 
     # [2] the scope of the renewal checks: the months before the current one. From the current
-    #     month on the renewals are partial (the month is still running) and step 02 wipes them,
+    #     month on the renewals are partial (the month is still running) and step 1.3 wipes them,
     #     so only the pipeline is checked there
     current_month = configuration.calendar_boundaries()["current"]
     closed_rows = renewal_raw[renewal_raw[configuration.period_col] < current_month]
     renewed_units = closed_rows[configuration.renewed_units_col]
     renewed_usd = closed_rows[configuration.renewed_usd_col]
-    configuration.log_action(STEP_01_LABEL, 2, f"renewals checked in {len(closed_rows):,} rows before {current_month} · "
+    configuration.log_action(STEP_1_2_LABEL, 2, f"renewals checked in {len(closed_rows):,} rows before {current_month} · "
                                             f"{len(renewal_raw) - len(closed_rows):,} rows from {current_month} on: "
-                                            f"pipeline only, renewals wiped in step 02")
+                                            f"pipeline only, renewals wiped in step 1.3")
 
     # [3] the money
-    configuration.log_action(STEP_01_LABEL, 3, "checking the money")
+    configuration.log_action(STEP_1_2_LABEL, 3, "checking the money")
     for pipeline_column in (configuration.pipeline_units_col, configuration.pipeline_usd_col):
         check_no_nulls(configuration, check_log, renewal_raw, pipeline_column, "every month")
         check_no_negatives(configuration, check_log, renewal_raw, pipeline_column, "every month")
@@ -493,9 +532,9 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         total_column = measure.part_of
         if total_column is None:
             continue                                  # not a part of anything (the second moment): checked below
-        # a null whole is not compared here: it is the null renewal, already warned (and read as 0 by step 02)
+        # a null whole is not compared here: it is the null renewal, already warned (and read as 0 by step 1.3)
         above_total = closed_rows[closed_rows[closed_month_column] > closed_rows[total_column] + configuration.money_tolerance]
-        configuration.log_check(STEP_01_LABEL, check_log, f"{closed_month_column} is not above {total_column}, closed months",
+        configuration.log_check(STEP_1_2_LABEL, check_log, f"{closed_month_column} is not above {total_column}, closed months",
                                 above_total.empty,
                                 failure_detail=f"{len(above_total):,} closed rows with {closed_month_column} above "
                                                f"{total_column} (a part of the renewed above the renewed)",
@@ -511,7 +550,7 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         negative_variance = with_base[with_base[moment_column] * with_base[base_column]
                                       < with_base[renewed_column] ** 2 * (1 - configuration.measure_relative_tolerance)
                                       - configuration.money_tolerance]
-        configuration.log_check(STEP_01_LABEL, check_log, f"{moment_column} gives a variance ≥ 0, closed months",
+        configuration.log_check(STEP_1_2_LABEL, check_log, f"{moment_column} gives a variance ≥ 0, closed months",
                                 negative_variance.empty,
                                 failure_detail=f"{len(negative_variance):,} closed rows where Σ renewed² / base is below "
                                                f"(Σ renewed)² / Σ base: not built licence by licence as renewed² / due",
@@ -523,7 +562,7 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         off_base = closed_rows[(band_total - closed_rows[base_column].fillna(0)).abs()
                                > configuration.money_tolerance
                                + configuration.measure_relative_tolerance * closed_rows[base_column].fillna(0).abs()]
-        configuration.log_check(STEP_01_LABEL, check_log, f"the {len(band_columns)} ratio bands add up to {base_column}, closed months",
+        configuration.log_check(STEP_1_2_LABEL, check_log, f"the {len(band_columns)} ratio bands add up to {base_column}, closed months",
                                 off_base.empty,
                                 failure_detail=f"{len(off_base):,} closed rows whose bands do not add up to the isolated "
                                                f"base (a licence in no band, or in two)",
@@ -534,32 +573,32 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         isolated_coherence_summary(closed_rows, configuration, check_log)
 
     # how "nobody renewed" arrives: null (a LEFT JOIN with no match) or 0. A null is not an
-    # error but it is not a number either: step 02 reads it as 0.
+    # error but it is not a number either: step 1.3 reads it as 0.
     no_result_rows = closed_rows[renewed_units.isna() | (renewed_units == 0)]
     null_rows = int(renewed_units.isna().sum())
     zero_rows = int((renewed_units == 0).sum())
     convention_text = f"{null_rows:,} rows null · {zero_rows:,} rows 0 (of {len(closed_rows):,} closed rows)"
-    configuration.log_check(STEP_01_LABEL, check_log, "rows with no renewal arrive as 0, not null, closed months",
+    configuration.log_check(STEP_1_2_LABEL, check_log, "rows with no renewal arrive as 0, not null, closed months",
                             null_rows == 0,
-                            failure_detail=f"{convention_text}: a null means no renewal (read as 0 in step 02)",
+                            failure_detail=f"{convention_text}: a null means no renewal (read as 0 in step 1.3)",
                             context=convention_text, blocking=False,
                             examples=example_rows(no_result_rows.sort_values(configuration.renewed_units_col,
                                                                              na_position="first"), configuration))
 
     null_mismatch = closed_rows[renewed_units.isna() != renewed_usd.isna()]     # one null without the other: broken
-    configuration.log_check(STEP_01_LABEL, check_log, "renewed units and USD are null together, closed months",
+    configuration.log_check(STEP_1_2_LABEL, check_log, "renewed units and USD are null together, closed months",
                             null_mismatch.empty,
                             failure_detail=f"{len(null_mismatch):,} closed rows have one of the two renewal columns null",
                             examples=example_rows(null_mismatch, configuration))
 
     free_renewals = closed_rows[(renewed_units > 0) & (renewed_usd <= 0)]
-    configuration.log_check(STEP_01_LABEL, check_log, "no renewal for free (units > 0 with USD ≤ 0), closed months",
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no renewal for free (units > 0 with USD ≤ 0), closed months",
                             free_renewals.empty,
                             failure_detail=f"{len(free_renewals):,} closed rows renew units with USD ≤ 0 "
                                            f"(renewing for free does not exist)",
                             examples=example_rows(free_renewals, configuration))
     usd_without_units = closed_rows[(renewed_usd > 0) & (renewed_units == 0)]
-    configuration.log_check(STEP_01_LABEL, check_log, "no renewed USD without renewed units, closed months",
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no renewed USD without renewed units, closed months",
                             usd_without_units.empty,
                             failure_detail=f"{len(usd_without_units):,} closed rows have renewed USD with 0 renewed units",
                             examples=example_rows(usd_without_units, configuration))
@@ -568,20 +607,20 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         base_column = configuration.renewed_pipeline_usd_col
         base_values = closed_rows[base_column]
         value_without_renewers = closed_rows[(renewed_units == 0) & (base_values > 0)]      # a null renewal: warned above
-        configuration.log_check(STEP_01_LABEL, check_log, f"{base_column} is 0 where nothing renewed, closed months",
+        configuration.log_check(STEP_1_2_LABEL, check_log, f"{base_column} is 0 where nothing renewed, closed months",
                                 value_without_renewers.empty,
                                 failure_detail=f"{len(value_without_renewers):,} closed rows carry a renewers' due value "
                                                f"with 0 renewed units",
                                 blocking=False, examples=example_rows(value_without_renewers, configuration))
         renewers_without_value = closed_rows[(renewed_units > 0) & (base_values.fillna(0) == 0)]
-        configuration.log_check(STEP_01_LABEL, check_log, f"{base_column} is above 0 where something renewed, closed months",
+        configuration.log_check(STEP_1_2_LABEL, check_log, f"{base_column} is above 0 where something renewed, closed months",
                                 renewers_without_value.empty,
                                 failure_detail=f"{len(renewers_without_value):,} closed rows renew units with no renewers' "
                                                f"due value (their uplift cannot be computed: they are left out of it)",
                                 blocking=False, examples=example_rows(renewers_without_value, configuration))
 
     # [4] the dimensions and the timevarying flags
-    configuration.log_action(STEP_01_LABEL, 4, f"checking {len(dimension_columns(configuration))} dimensions and "
+    configuration.log_action(STEP_1_2_LABEL, 4, f"checking {len(dimension_columns(configuration))} dimensions and "
                                             f"{len(configuration.structural_timevarying_dims)} timevarying flags")
     empty_by_dimension = {}
     for dimension_column in dimension_columns(configuration):
@@ -589,7 +628,7 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         empty_rows = int(values.isna().sum() + (values.astype(str).str.strip() == "").sum())
         if empty_rows:
             empty_by_dimension[dimension_column] = empty_rows
-    configuration.log_check(STEP_01_LABEL, check_log, "no dimension has a null or empty value", not empty_by_dimension,
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no dimension has a null or empty value", not empty_by_dimension,
                             failure_detail=f"empty values in dimensions (rows per column): {empty_by_dimension}",
                             context=f"{len(dimension_columns(configuration))} dimensions")
 
@@ -604,7 +643,7 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
         values = renewal_raw[timevarying_column]
         unexpected_values = [value for value in values.dropna().unique() if value not in DICHOTOMOUS_VALUES]
         has_nulls = bool(values.isna().any())
-        configuration.log_check(STEP_01_LABEL, check_log, f"{timevarying_column} is 0 / 1",
+        configuration.log_check(STEP_1_2_LABEL, check_log, f"{timevarying_column} is 0 / 1",
                                 not unexpected_values and not has_nulls,
                                 failure_detail=f"{timevarying_column} must be 0 / 1: found {unexpected_values[:10]}"
                                                f"{' and nulls' if has_nulls else ''}",
@@ -619,8 +658,8 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
     if configuration.discount_value_column:
         discount_values = renewal_raw[configuration.discount_value_column]
         out_of_range = int(((discount_values < 0) | (discount_values > 1)).sum())
-        configuration.log_action(STEP_01_LABEL, 5, f"checking {configuration.discount_value_column}")
-        configuration.log_check(STEP_01_LABEL, check_log,
+        configuration.log_action(STEP_1_2_LABEL, 5, f"checking {configuration.discount_value_column}")
+        configuration.log_check(STEP_1_2_LABEL, check_log,
                                 f"{configuration.discount_value_column} is between 0 and 1 (or null = unknown)",
                                 out_of_range == 0,
                                 failure_detail=f"{out_of_range:,} rows of {configuration.discount_value_column} "
@@ -628,25 +667,25 @@ def check_the_values(renewal_raw: pd.DataFrame, configuration: Config, check_log
                                 context=f"{discount_values.isna().mean():.1%} of rows unknown · "
                                         f"{share_of_money(discount_values.isna())}")
     else:
-        configuration.log_action(STEP_01_LABEL, 5, "no exact discount declared: nothing to check")
+        configuration.log_action(STEP_1_2_LABEL, 5, "no exact discount declared: nothing to check")
 
     # [6] warnings: plausible in a real extract, worth a look
-    configuration.log_action(STEP_01_LABEL, 6, "looking for what is plausible but worth a look")
+    configuration.log_action(STEP_1_2_LABEL, 6, "looking for what is plausible but worth a look")
     above_pipeline = closed_rows[renewed_units > closed_rows[configuration.pipeline_units_col]]
     excess_units = float((above_pipeline[configuration.renewed_units_col]
                           - above_pipeline[configuration.pipeline_units_col]).sum())
-    configuration.log_check(STEP_01_LABEL, check_log, "no row renews more units than fall due, closed months",
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no row renews more units than fall due, closed months",
                             above_pipeline.empty,
                             failure_detail=f"{len(above_pipeline):,} closed rows renew more units than fall due "
                                            f"(+{excess_units:,.0f} units: a rate above 100 %)",
                             blocking=False, examples=example_rows(above_pipeline, configuration))
     units_without_value = int(((renewal_raw[configuration.pipeline_units_col] > 0)
                                & (renewal_raw[configuration.pipeline_usd_col] == 0)).sum())
-    configuration.log_check(STEP_01_LABEL, check_log, "no row falls due with units but USD = 0", units_without_value == 0,
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no row falls due with units but USD = 0", units_without_value == 0,
                             failure_detail=f"{units_without_value:,} rows fall due with units but USD = 0",
                             blocking=False)
     repeated_rows = int(renewal_raw.duplicated().sum())
-    configuration.log_check(STEP_01_LABEL, check_log, "no row repeated in every column", repeated_rows == 0,
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no row repeated in every column", repeated_rows == 0,
                             failure_detail=f"{repeated_rows:,} rows repeated in every column (a possible double load)",
                             blocking=False)
     return closed_rows
@@ -686,32 +725,32 @@ def isolated_coherence_summary(closed_rows: pd.DataFrame, configuration: Config,
             ((band_total_by_row - base).abs() > tolerance + configuration.measure_relative_tolerance * base.abs()).sum())
 
     base_total, renewed_total = float(base.sum()), float(renewed.sum())
-    doc(f"[{STEP_01_LABEL}] ══════════ ISOLATED: COHERENCIA DEL EXTRACTO ══════════")
+    doc(f"[{STEP_1_2_LABEL}] ══════════ ISOLATED: COHERENCIA DEL EXTRACTO ══════════")
     if base_total > 0:
-        doc(f"[{STEP_01_LABEL}] closed months · isolated base ${base_total:,.0f} · isolated renewed ${renewed_total:,.0f} · "
+        doc(f"[{STEP_1_2_LABEL}] closed months · isolated base ${base_total:,.0f} · isolated renewed ${renewed_total:,.0f} · "
             f"mean ratio {renewed_total / base_total:.3f}")
     else:
-        doc(f"[{STEP_01_LABEL}] no isolated base in the closed months")
+        doc(f"[{STEP_1_2_LABEL}] no isolated base in the closed months")
     for description, rows in findings.items():
-        doc(f"[{STEP_01_LABEL}]   {rows:>10,}  {description}  {'(must be 0)' if rows else '✓'}")
+        doc(f"[{STEP_1_2_LABEL}]   {rows:>10,}  {description}  {'(must be 0)' if rows else '✓'}")
     if complete_bands and base_total > 0:
         band_values = [float(closed_rows[column].fillna(0.0).sum()) for column, _, _, _, _ in bands]
         bands_over_base = sum(band_values) / base_total
-        configuration.log_check(STEP_01_LABEL, check_log, "the six ratio bands add up to the isolated base in total, closed months",
+        configuration.log_check(STEP_1_2_LABEL, check_log, "the six ratio bands add up to the isolated base in total, closed months",
                                 abs(bands_over_base - 1) <= configuration.measure_relative_tolerance * 10,
                                 failure_detail=f"bands / base = {bands_over_base:.4f}: the bands count licences the base "
                                                f"does not (a ratio outside the isolated renewals, or other amounts)",
                                 blocking=False, context=f"bands / base = {bands_over_base:.4f}")
         shares = (" · ".join(f"{label} {value / sum(band_values):.1%}" for (_, _, _, _, label), value in zip(bands, band_values))
                   if sum(band_values) > 0 else "—")
-        doc(f"[{STEP_01_LABEL}]   bands / base = {bands_over_base:.4f} (must be 1.0000) · the value by ratio: {shares}")
+        doc(f"[{STEP_1_2_LABEL}]   bands / base = {bands_over_base:.4f} (must be 1.0000) · the value by ratio: {shares}")
     coherent = all(rows == 0 for rows in findings.values())
-    verdict = ("the isolated measures are COHERENT: the dispersion of step 14 (LICENCE BY LICENCE) and of step 25 can be read"
+    verdict = ("the isolated measures are COHERENT: the dispersion of step 3.1 (LICENCE BY LICENCE) and of step 8.4 can be read"
                if coherent else
                "the isolated measures are NOT coherent: the histogram, the std deviation and the shares near 1 of steps "
                "15 and 22 are NOT reliable; the mean ratio is")
-    doc(f"[{STEP_01_LABEL}] VALORACIÓN: {verdict}")
-    doc(f"[{STEP_01_LABEL}] ══════════ FIN DE LA COHERENCIA ISOLATED ══════════")
+    doc(f"[{STEP_1_2_LABEL}] VALORACIÓN: {verdict}")
+    doc(f"[{STEP_1_2_LABEL}] ══════════ FIN DE LA COHERENCIA ISOLATED ══════════")
 
 
 def report_the_closed_months(closed_rows: pd.DataFrame, configuration: Config) -> None:
@@ -721,7 +760,7 @@ def report_the_closed_months(closed_rows: pd.DataFrame, configuration: Config) -
     renewed_units = closed_rows[configuration.renewed_units_col].sum()
     renewed_usd = closed_rows[configuration.renewed_usd_col].sum()
     renewal_rate_text = f"{renewed_units / pipeline_units:.1%}" if pipeline_units else "no units due"
-    configuration.log_action(STEP_01_LABEL, 13, f"closed months: {pipeline_units:,.0f} units due · "
+    configuration.log_action(STEP_1_2_LABEL, 13, f"closed months: {pipeline_units:,.0f} units due · "
                                              f"{renewed_units:,.0f} renewed ({renewal_rate_text}) · "
                                              f"${pipeline_usd:,.0f} due · ${renewed_usd:,.0f} renewed")
 
@@ -738,26 +777,26 @@ def check_the_maturation_columns(renewal_raw: pd.DataFrame, state: str, configur
     columns = configuration.maturation_columns_of(state)
     units_column = configuration.pipeline_units_col
     not_numeric = [column for column in columns if not pd.api.types.is_numeric_dtype(renewal_raw[column])]
-    configuration.log_check(STEP_01_LABEL, check_log, f"the maturation columns of {state} are numeric", not not_numeric,
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"the maturation columns of {state} are numeric", not not_numeric,
                             failure_detail=f"not numeric: {not_numeric}", context=f"{columns[0]} … {columns[-1]}")
     if not_numeric:
         return
     timing = renewal_raw[columns].astype(float)
     negative_rows = int((timing < 0).any(axis=1).sum())
-    configuration.log_check(STEP_01_LABEL, check_log, f"the maturation columns of {state} are never negative", negative_rows == 0,
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"the maturation columns of {state} are never negative", negative_rows == 0,
                             failure_detail=f"{negative_rows:,} rows with a negative maturation value")
     in_state = renewal_raw[state].isin(ACTIVE_FLAG_VALUES)
     dated_units = timing.fillna(0.0).sum(axis=1)
     differs = in_state & ((dated_units - renewal_raw[units_column]).abs() > configuration.units_tolerance)
     units_in_state = float(renewal_raw.loc[in_state, units_column].sum())
-    configuration.log_check(STEP_01_LABEL, check_log, f"on the rows with {state} = 1 the maturation columns add up to {units_column}",
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"on the rows with {state} = 1 the maturation columns add up to {units_column}",
                             not differs.any(),
                             failure_detail=f"{int(differs.sum()):,} rows of {int(in_state.sum()):,} where they do not "
                                            f"({abs(float((dated_units - renewal_raw[units_column])[differs].sum())):,.0f} units of difference)",
                             context=f"{int(in_state.sum()):,} rows · {units_in_state:,.0f} units with the state, every one dated",
                             blocking=False, examples=example_rows(renewal_raw[differs], configuration))
     filled_without_state = ~in_state & (timing.fillna(0.0) != 0).any(axis=1)
-    configuration.log_check(STEP_01_LABEL, check_log, f"on the rows with {state} = 0 the maturation columns are null or 0",
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"on the rows with {state} = 0 the maturation columns are null or 0",
                             not filled_without_state.any(),
                             failure_detail=f"{int(filled_without_state.sum()):,} rows without the state carry a date of it",
                             blocking=False, examples=example_rows(renewal_raw[filled_without_state], configuration))
@@ -766,7 +805,7 @@ def check_the_maturation_columns(renewal_raw: pd.DataFrame, state: str, configur
     impossible = np.zeros(len(renewal_raw), dtype=bool)
     for months_before, column in enumerate(columns[:-1]):        # the last one is "that many months or more": always possible
         impossible |= (months_before < months_after_current) & (timing[column].fillna(0.0).to_numpy() > 0)
-    configuration.log_check(STEP_01_LABEL, check_log, f"no unit of a future month has {state} dated after the current month",
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"no unit of a future month has {state} dated after the current month",
                             not impossible.any(),
                             failure_detail=f"{int(impossible.sum()):,} future rows with {state} set after {current_month} "
                                            f"(a leak: the extract knows something that has not happened yet)",
@@ -776,13 +815,13 @@ def check_the_maturation_columns(renewal_raw: pd.DataFrame, state: str, configur
 
 def check_no_nulls(configuration: Config, check_log: list, rows: pd.DataFrame, column_name: str, scope: str) -> None:
     null_rows = int(rows[column_name].isna().sum())
-    configuration.log_check(STEP_01_LABEL, check_log, f"{column_name} has no nulls, {scope}", null_rows == 0,
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"{column_name} has no nulls, {scope}", null_rows == 0,
                             failure_detail=f"{null_rows:,} nulls in {column_name} ({scope})")
 
 
 def check_no_negatives(configuration: Config, check_log: list, rows: pd.DataFrame, column_name: str, scope: str) -> None:
     negative_rows = int((rows[column_name] < 0).sum())
-    configuration.log_check(STEP_01_LABEL, check_log, f"{column_name} has no negatives, {scope}", negative_rows == 0,
+    configuration.log_check(STEP_1_2_LABEL, check_log, f"{column_name} has no negatives, {scope}", negative_rows == 0,
                             failure_detail=f"{negative_rows:,} negative values in {column_name} ({scope})")
 
 
@@ -806,13 +845,13 @@ def build_the_levels(renewal_raw: pd.DataFrame, configuration: Config, check_log
     """Actions 7-11: the generated coarse level of every dimension in leveled_dims. Returns (the raw with
     <column>_level_1, the evidence to show in action 14 — None when no dimension is leveled)."""
     if not configuration.leveled_dims:
-        configuration.log_action(STEP_01_LABEL, 7, "no dimension declared in leveled_dims: nothing to generate")
+        configuration.log_action(STEP_1_2_LABEL, 7, "no dimension declared in leveled_dims: nothing to generate")
         return renewal_raw, None
 
     # the groups are made from the values: if a check of the values already failed, they would be made
     # from wrong data (the step stops in action 12 anyway)
     if any(logged_check[0] == STATUS_FAILED for logged_check in check_log):
-        configuration.log_action(STEP_01_LABEL, 7, "the levels are not built: a check of the values failed")
+        configuration.log_action(STEP_1_2_LABEL, 7, "the levels are not built: a check of the values failed")
         return renewal_raw, None
     raw = renewal_raw.copy()
 
@@ -828,7 +867,7 @@ def build_the_levels(renewal_raw: pd.DataFrame, configuration: Config, check_log
                    or stored["dims"][column_name]["type"] != level_type
                    or stored["dims"][column_name].get("criterion", {}).get("fixed_pp") != configuration.level_merge_max_pp
                    or stored["dims"][column_name].get("criterion", {}).get("support_floor") != configuration.support_floor]
-    configuration.log_action(STEP_01_LABEL, 7, f"{len(configuration.leveled_dims)} dimensions with a generated level "
+    configuration.log_action(STEP_1_2_LABEL, 7, f"{len(configuration.leveled_dims)} dimensions with a generated level "
                                             f"{list(configuration.leveled_dims)} · file {path}: "
                                             + (f"found ({stored.get('created', '?')}), " if stored.get("dims") else "not found, ")
                                             + (f"generating {to_generate}" if to_generate else "every dimension in it, reused"))
@@ -842,9 +881,9 @@ def build_the_levels(renewal_raw: pd.DataFrame, configuration: Config, check_log
         stored["updated"] = datetime.now().isoformat(timespec="seconds")
         stored["current_month"] = str(configuration.current_month)
         write_levels_file(path, stored)
-        configuration.log_action(STEP_01_LABEL, 8, f"groups generated from the training months and written to {path}")
+        configuration.log_action(STEP_1_2_LABEL, 8, f"groups generated from the training months and written to {path}")
     else:
-        configuration.log_action(STEP_01_LABEL, 8, "nothing to generate")
+        configuration.log_action(STEP_1_2_LABEL, 8, "nothing to generate")
 
     # [9] fill the coarse level
     unknown_values = {}
@@ -855,19 +894,46 @@ def build_the_levels(renewal_raw: pd.DataFrame, configuration: Config, check_log
         if unknown:
             unknown_values[column_name] = unknown
         raw[f"{column_name}{GENERATED_LEVEL_SUFFIX}"] = values.map(mapping).fillna(RESIDUAL_GROUP)
-    configuration.log_action(STEP_01_LABEL, 9, "filled: " + ", ".join(configuration.generated_columns))
+    configuration.log_action(STEP_1_2_LABEL, 9, "filled: " + ", ".join(configuration.generated_columns))
 
     # [08] the check
-    configuration.log_action(STEP_01_LABEL, 10, "checking the values the file knows")
-    configuration.log_check(STEP_01_LABEL, check_log, "no value of the extract is unknown to the file", not unknown_values,
+    configuration.log_action(STEP_1_2_LABEL, 10, "checking the values the file knows")
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no value of the extract is unknown to the file", not unknown_values,
                             failure_detail="values sent to the residual: " + "; ".join(f"{column_name}: {values[:10]}"
                                                                                      for column_name, values in unknown_values.items()),
                             blocking=False)
 
     # [09] the levels as tables (shown in action 14; the file is the record, they are not written to SQL)
-    configuration.log_action(STEP_01_LABEL, 11, "the levels as tables")
+    configuration.log_action(STEP_1_2_LABEL, 11, "the levels as tables")
     levels_table, values_table, decisions_table = levels_as_tables(stored, configuration)
     return raw, (stored, levels_table, values_table, decisions_table)
+
+
+def fill_the_levels_of_the_time_series_rows(time_series_rows: pd.DataFrame, levels_evidence, configuration: Config,
+                                            check_log: list) -> pd.DataFrame:
+    """The generated levels of the time_series rows, with the groups of the renewal universe: their re-entry is placed
+    in the series they renew in, and a series carries <column>_level_1. A value the file does not know goes to the
+    residual group (warning: a product sold only in retail has no renewal rate of its own to be grouped by)."""
+    if levels_evidence is None or not len(time_series_rows):
+        return time_series_rows
+    stored = levels_evidence[0]
+    rows, unknown_values = time_series_rows.copy(), {}
+    for column_name in configuration.leveled_dims:
+        if column_name not in rows.columns:
+            continue
+        mapping = stored["dims"][column_name]["mapping"]
+        values = rows[column_name].astype(str)
+        unknown = sorted(set(values[rows[column_name].notna()].unique()) - set(mapping))
+        if unknown:
+            unknown_values[column_name] = unknown
+        rows[f"{column_name}{GENERATED_LEVEL_SUFFIX}"] = values.map(mapping).fillna(RESIDUAL_GROUP).where(
+            rows[column_name].notna(), None)
+    configuration.log_check(STEP_1_2_LABEL, check_log, "no value of the time_series rows is unknown to the file",
+                            not unknown_values,
+                            failure_detail="values sent to the residual: " + "; ".join(f"{column_name}: {values[:10]}"
+                                                                                     for column_name, values in unknown_values.items()),
+                            blocking=False, context=f"{len(rows):,} time_series rows")
+    return rows
 
 
 def natural_key(value: str) -> list:
@@ -1013,34 +1079,34 @@ def show_the_evidence(stored: dict, levels_table: pd.DataFrame, values_table: pd
     for column_name in configuration.leveled_dims:
         criterion = stored["dims"][column_name].get("criterion", {})
         groups = [group for group in stored["dims"][column_name]["groups"] if group["group"] != RESIDUAL_GROUP]
-        configuration.log_action(STEP_01_LABEL, 14, f"{column_name} ({stored['dims'][column_name]['type']}): neighbours merge while their "
+        configuration.log_action(STEP_1_2_LABEL, 14, f"{column_name} ({stored['dims'][column_name]['type']}): neighbours merge while their "
                                                 f"standardised rates differ by ≤ {criterion.get('threshold_pp', '?')} pp — "
                                                 f"{criterion.get('rule', '?')} · {len(groups)} groups"
                                                 + (" · ONE group: the dimension does not separate the renewal rate beyond that "
-                                                   "noise; its level_1 is constant and its pass of the ladder merges nothing (step 07)"
+                                                   "noise; its level_1 is constant and its pass of the ladder merges nothing (step 2.1)"
                                                    if len(groups) == 1 else ""))
     rate = next(iter(stored["dims"].values())).get("criterion", {}).get("global_rate", 0.64)
     noise_rows = [{"contracts_a_month": support, "binomial_noise_pp": round(100 * np.sqrt(rate * (1 - rate) / support), 1)}
                   for support in (10, 30, 50, 100, 271, 1000)]
-    configuration.logger.doc(f"[{STEP_01_LABEL}] what a difference in pp means: the noise of the monthly rate of a series of n contracts "
+    configuration.logger.doc(f"[{STEP_1_2_LABEL}] what a difference in pp means: the noise of the monthly rate of a series of n contracts "
                              f"(p = {rate:.2f}); a merge helps the series whose noise is larger than the difference it adds:")
     configuration.show_table(pd.DataFrame(noise_rows))
-    configuration.logger.doc(f"[{STEP_01_LABEL}] the groups (rate_std: standardised by cell; rate_<year>: the same, year by year — "
+    configuration.logger.doc(f"[{STEP_1_2_LABEL}] the groups (rate_std: standardised by cell; rate_<year>: the same, year by year — "
                              f"a group is stable when its years stay close):")
     configuration.show_table(levels_table)
-    configuration.logger.doc(f"[{STEP_01_LABEL}] every value (noise_pp: the binomial noise of its own monthly rate; two values whose "
+    configuration.logger.doc(f"[{STEP_1_2_LABEL}] every value (noise_pp: the binomial noise of its own monthly rate; two values whose "
                              f"rates differ by less than their noise cannot be told apart month by month):")
     configuration.show_table(values_table)
-    configuration.logger.doc(f"[{STEP_01_LABEL}] the merge decisions, in order (within_5_pp: what the old fixed 5 pp would have said):")
+    configuration.logger.doc(f"[{STEP_1_2_LABEL}] the merge decisions, in order (within_5_pp: what the old fixed 5 pp would have said):")
     configuration.show_table(decisions_table)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 02 · APPLY CALENDAR  (until 25-oct-2026: step_02_apply_calendar.py)
+# STEP 1.3 · APPLY CALENDAR  (until 25-oct-2026: step_02_apply_calendar.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The calendar of the Config, applied to every row of the raw.
 #
-# Steps 00 and 01 only looked at the raw. This is the first step that changes it:
+# Steps 1.1 and 1.2 only looked at the raw. This is the first step that changes it:
 #   · every row gets its role in time, generated from the calendar of the Config
 #     (entrenamiento · examen · proyeccion) and the state of the
 #     current month. The raw's own role columns, if any, are ignored.
@@ -1060,7 +1126,7 @@ def show_the_evidence(stored: dict, levels_table: pd.DataFrame, values_table: pd
 #   3. closed months: read a null renewal as 0
 #   4. from the current month on: wipe the renewals already booked; and wipe the pipeline of the
 #      1-year licences sold or renewed from the current month on (due 12 months later or more):
-#      that event has not happened, or only in part, so its pipeline is not known yet and step 20
+#      that event has not happened, or only in part, so its pipeline is not known yet and step 7.2
 #      projects it (the raw keeps it in s0_vencen_*)
 #   5. check the calendar and the money                               checks 1-9
 #   6. count the checks; stop if any failed
@@ -1081,12 +1147,12 @@ def show_the_evidence(stored: dict, levels_table: pd.DataFrame, values_table: pd
 # The calendar per month is not a table: its SQL over sff_nucleo is printed (report_queries.calendar_query).
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_02_LABEL = "02"
-STEP_02_NAME = "APPLY CALENDAR"
-STEP_02_PURPOSE = ("give every row its role in time from the calendar of the Config, read a null renewal of a "
+STEP_1_3_LABEL = "1.3"
+STEP_1_3_NAME = "APPLY CALENDAR"
+STEP_1_3_PURPOSE = ("give every row its role in time from the calendar of the Config, read a null renewal of a "
                 "closed month as 0, and wipe the renewals already booked from the current month on: "
                 "the future must look like it has not started")
-STEP_02_ACTIONS = ["keep the raw's renewals and pipeline in the s0_ columns",
+STEP_1_3_ACTIONS = ["keep the raw's renewals and pipeline in the s0_ columns",
                 "give every row its role and the current-month state",
                 "closed months: read a null renewal as 0",
                 "from the current month on: wipe the renewals already booked, and the pipeline of 1-year licences "
@@ -1094,7 +1160,7 @@ STEP_02_ACTIONS = ["keep the raw's renewals and pipeline in the s0_ columns",
                 "check the calendar and the money (checks 1-9)",
                 "count the checks; stop if any failed",
                 "show the calendar per role, as a table"]
-STEP_02_OUTPUT = ("the raw with six new columns (rol, es_mes_en_curso, s0_renovados_unidades, s0_renovados_usd, "
+STEP_1_3_OUTPUT = ("the raw with six new columns (rol, es_mes_en_curso, s0_renovados_unidades, s0_renovados_usd, "
                "s0_vencen_unidades, s0_vencen_usd)")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -1105,7 +1171,7 @@ STEP_02_OUTPUT = ("the raw with six new columns (rol, es_mes_en_curso, s0_renova
 def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """Give every row its role and current-month state, read null closed renewals as 0,
     wipe the early results of the future; log every check; stop if any fails."""
-    configuration.log_step_start(STEP_02_LABEL, STEP_02_NAME, STEP_02_PURPOSE, STEP_02_ACTIONS, STEP_02_OUTPUT)
+    configuration.log_step_start(STEP_1_3_LABEL, STEP_1_3_NAME, STEP_1_3_PURPOSE, STEP_1_3_ACTIONS, STEP_1_3_OUTPUT)
     check_log = []
     period_column = configuration.period_col
     renewed_columns = [configuration.renewed_units_col, configuration.renewed_usd_col]
@@ -1117,14 +1183,14 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     calendared[S0_RENEWED_USD_COLUMN] = calendared[configuration.renewed_usd_col]
     calendared[S0_PIPELINE_UNITS_COLUMN] = calendared[configuration.pipeline_units_col]
     calendared[S0_PIPELINE_USD_COLUMN] = calendared[configuration.pipeline_usd_col]
-    configuration.log_action(STEP_02_LABEL, 1, f"renewals and pipeline kept as the raw had them in the s0_ columns")
+    configuration.log_action(STEP_1_3_LABEL, 1, f"renewals and pipeline kept as the raw had them in the s0_ columns")
 
     # [2] the role of every row and the state of the current month, from the calendar
     calendared[CALENDAR_ROLE_COLUMN] = configuration.role_of_months(calendared[period_column])
     calendared[CURRENT_MONTH_COLUMN] = (calendared[period_column] == boundaries["current"]).astype(int).to_numpy()
     closed_rows = calendared[period_column] < boundaries["current"]
     projection_rows = calendared[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION
-    configuration.log_action(STEP_02_LABEL, 2, f"roles given: {configuration.calendar_description()}")
+    configuration.log_action(STEP_1_3_LABEL, 2, f"roles given: {configuration.calendar_description()}")
 
     # [3] closed months: a null renewal means nobody renewed
     null_closed_rows = closed_rows & calendared[configuration.renewed_units_col].isna()
@@ -1132,7 +1198,7 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     calendared.loc[null_closed_rows, renewed_columns] = 0.0
     for closed_month_column in configuration.closed_month_measure_cols:      # each on its own: it may be null alone
         calendared.loc[closed_rows, closed_month_column] = calendared.loc[closed_rows, closed_month_column].fillna(0.0)
-    configuration.log_action(STEP_02_LABEL, 3, f"{null_renewals_read_as_zero:,} null renewals of closed months read as 0")
+    configuration.log_action(STEP_1_3_LABEL, 3, f"{null_renewals_read_as_zero:,} null renewals of closed months read as 0")
 
     # [4] the current month and later: wipe the renewals already booked
     early_results = calendared.loc[projection_rows, renewed_columns].fillna(0)
@@ -1142,12 +1208,12 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     calendared.loc[projection_rows, renewed_columns] = np.nan
     for closed_month_column in configuration.closed_month_measure_cols:      # only known at close: partial too, wiped too
         calendared.loc[projection_rows, closed_month_column] = np.nan
-    configuration.log_action(STEP_02_LABEL, 4, f"{rows_with_early_results:,} rows from {boundaries['current']} on had "
+    configuration.log_action(STEP_1_3_LABEL, 4, f"{rows_with_early_results:,} rows from {boundaries['current']} on had "
                                             f"renewals already booked: wiped {wiped_units:,.0f} units · ${wiped_usd:,.0f}")
 
     # [4b] the pipeline that the current month and later will create: a 1-year licence due in
     #      month m was sold or renewed in m − 12; if m − 12 is the current month or later, that
-    #      event has not happened (or only in part): its pipeline is wiped and step 20 projects it
+    #      event has not happened (or only in part): its pipeline is wiped and step 7.2 projects it
     not_known_yet = ((calendared[period_column] >= boundaries["current"] + configuration.one_year_term_months)
                      & is_one_year(calendared, configuration))
     wiped_pipeline_units = float(calendared.loc[not_known_yet, configuration.pipeline_units_col].sum())
@@ -1155,21 +1221,21 @@ def apply_calendar(validated: pd.DataFrame, configuration: Config) -> pd.DataFra
     calendared.loc[not_known_yet, [configuration.pipeline_units_col, configuration.pipeline_usd_col]] = 0.0
     wiped_per_term = (calendared.loc[not_known_yet, configuration.term_column].astype(str).value_counts().to_dict()
                       if configuration.term_column else "no term_column: every licence is treated as 1-year")
-    configuration.log_action(STEP_02_LABEL, "4b", f"{int(not_known_yet.sum()):,} rows of 1-year licences due from "
+    configuration.log_action(STEP_1_3_LABEL, "4b", f"{int(not_known_yet.sum()):,} rows of 1-year licences due from "
                                             f"{boundaries['current'] + configuration.one_year_term_months} on (sold or renewed from {boundaries['current']} on): "
                                             f"pipeline wiped {wiped_pipeline_units:,.0f} units · ${wiped_pipeline_usd:,.0f} "
                                             f"(it will be projected) · rows wiped per term: {wiped_per_term}")
 
     # [5] the checks
-    configuration.log_action(STEP_02_LABEL, 5, "checking the calendar and the money")
+    configuration.log_action(STEP_1_3_LABEL, 5, "checking the calendar and the money")
     months_per_role = months_by_role(calendared, configuration)
     check_roles_and_calendar(calendared, configuration, check_log, months_per_role, boundaries)
     check_money_conserved_by_the_calendar(validated, calendared, configuration, check_log, closed_rows, projection_rows,
                           null_renewals_read_as_zero, rows_with_early_results, wiped_units, wiped_usd, not_known_yet)
 
     # [6] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_02_LABEL, 6, "counting the checks")
-    configuration.log_check_summary(STEP_02_LABEL, STEP_02_NAME, check_log)
+    configuration.log_action(STEP_1_3_LABEL, 6, "counting the checks")
+    configuration.log_check_summary(STEP_1_3_LABEL, STEP_1_3_NAME, check_log)
 
     # [7] what the calendar looks like on the raw
     log_calendar_report(calendared, configuration, months_per_role)
@@ -1193,13 +1259,13 @@ def check_roles_and_calendar(calendared: pd.DataFrame, configuration: Config, ch
     # [1] every row has one of the three roles
     unknown_roles = sorted(set(calendared[CALENDAR_ROLE_COLUMN]) - set(ROLES_IN_ORDER))
     rows_per_role = calendared[CALENDAR_ROLE_COLUMN].value_counts()
-    configuration.log_check(STEP_02_LABEL, check_log, "every row has one of the three roles", not unknown_roles,
+    configuration.log_check(STEP_1_3_LABEL, check_log, "every row has one of the three roles", not unknown_roles,
                             failure_detail=f"unknown roles: {unknown_roles}",
                             context=" · ".join(f"{role} {int(rows_per_role.get(role, 0)):,}" for role in ROLES_IN_ORDER))
 
     # [2] a year of training at least
     training_months = len(months_per_role[ROLE_TRAIN])
-    configuration.log_check(STEP_02_LABEL, check_log, f"training has at least {configuration.min_training_months} months",
+    configuration.log_check(STEP_1_3_LABEL, check_log, f"training has at least {configuration.min_training_months} months",
                             training_months >= configuration.min_training_months,
                             failure_detail=f"only {training_months} training months: no seasonal pattern can be learned",
                             context=f"{training_months} months", blocking=False)
@@ -1207,14 +1273,14 @@ def check_roles_and_calendar(calendared: pd.DataFrame, configuration: Config, ch
     # [3] every exam month has rows (a month with no rows is a month the exam cannot score)
     exam_months = pd.period_range(boundaries["test_start"], boundaries["current"] - 1, freq="M")
     exam_months_without_rows = [str(month) for month in exam_months if month not in set(months_per_role[ROLE_TEST])]
-    configuration.log_check(STEP_02_LABEL, check_log, "every exam month has rows", not exam_months_without_rows,
+    configuration.log_check(STEP_1_3_LABEL, check_log, "every exam month has rows", not exam_months_without_rows,
                             failure_detail=f"exam months with no row: {exam_months_without_rows}",
                             context=f"{len(exam_months)} exam months", blocking=False)
 
     # [4] the current month has pipeline: without it there is nothing to forecast this month
     current_month_rows = calendared[CURRENT_MONTH_COLUMN] == 1
     current_pipeline_units = float(calendared.loc[current_month_rows, configuration.pipeline_units_col].sum())
-    configuration.log_check(STEP_02_LABEL, check_log, f"the current month ({boundaries['current']}) has pipeline",
+    configuration.log_check(STEP_1_3_LABEL, check_log, f"the current month ({boundaries['current']}) has pipeline",
                             current_pipeline_units > 0,
                             failure_detail=f"no units fall due in {boundaries['current']}",
                             context=f"{current_pipeline_units:,.0f} units due", blocking=False)
@@ -1232,11 +1298,11 @@ def check_money_conserved_by_the_calendar(validated: pd.DataFrame, calendared: p
     pipeline_differences = {column_name: float(calendared.loc[~not_known_yet, column_name].sum()
                                                - validated.loc[~not_known_yet, column_name].sum())
                             for column_name in pipeline_columns}
-    configuration.log_check(STEP_02_LABEL, check_log, "the pipeline is unchanged except the rows not known yet (units and USD)",
+    configuration.log_check(STEP_1_3_LABEL, check_log, "the pipeline is unchanged except the rows not known yet (units and USD)",
                             all(abs(difference) <= configuration.money_tolerance for difference in pipeline_differences.values()),
                             failure_detail=f"the pipeline changed: {pipeline_differences}")
     pipeline_left = float(calendared.loc[not_known_yet, pipeline_columns].abs().sum().sum())
-    configuration.log_check(STEP_02_LABEL, check_log, "no 1-year row created from the current month on keeps its pipeline",
+    configuration.log_check(STEP_1_3_LABEL, check_log, "no 1-year row created from the current month on keeps its pipeline",
                             pipeline_left == 0, failure_detail=f"{pipeline_left:,.0f} left in rows not known yet",
                             context=f"{int(not_known_yet.sum()):,} rows wiped: "
                                     f"${validated.loc[not_known_yet, configuration.pipeline_usd_col].sum():,.0f} "
@@ -1246,7 +1312,7 @@ def check_money_conserved_by_the_calendar(validated: pd.DataFrame, calendared: p
     closed_differences = {column_name: float(calendared.loc[closed_rows, column_name].sum()
                                              - validated.loc[closed_rows, column_name].fillna(0).sum())
                           for column_name in renewed_columns}
-    configuration.log_check(STEP_02_LABEL, check_log, "the renewals of the closed months are unchanged, a null read as 0",
+    configuration.log_check(STEP_1_3_LABEL, check_log, "the renewals of the closed months are unchanged, a null read as 0",
                             all(abs(difference) <= configuration.money_tolerance for difference in closed_differences.values())
                             and not calendared.loc[closed_rows, renewed_columns].isna().any().any(),
                             failure_detail=f"closed renewals changed: {closed_differences}",
@@ -1254,7 +1320,7 @@ def check_money_conserved_by_the_calendar(validated: pd.DataFrame, calendared: p
 
     # [7] nothing booked survives from the current month on
     renewals_left = int(calendared.loc[projection_rows, renewed_columns].notna().any(axis=1).sum())
-    configuration.log_check(STEP_02_LABEL, check_log, "no row from the current month on keeps a renewal", renewals_left == 0,
+    configuration.log_check(STEP_1_3_LABEL, check_log, "no row from the current month on keeps a renewal", renewals_left == 0,
                             failure_detail=f"{renewals_left:,} projection rows still carry a renewal",
                             context=f"{rows_with_early_results:,} rows with early results wiped: "
                                     f"{wiped_units:,.0f} units · ${wiped_usd:,.0f}")
@@ -1264,13 +1330,13 @@ def check_money_conserved_by_the_calendar(validated: pd.DataFrame, calendared: p
                  and calendared[S0_RENEWED_USD_COLUMN].equals(validated[configuration.renewed_usd_col])
                  and calendared[S0_PIPELINE_UNITS_COLUMN].equals(validated[configuration.pipeline_units_col])
                  and calendared[S0_PIPELINE_USD_COLUMN].equals(validated[configuration.pipeline_usd_col]))
-    configuration.log_check(STEP_02_LABEL, check_log, "the s0_ columns hold the raw's renewals and pipeline, untouched", s0_intact,
+    configuration.log_check(STEP_1_3_LABEL, check_log, "the s0_ columns hold the raw's renewals and pipeline, untouched", s0_intact,
                             failure_detail="the s0_ columns differ from the raw")
 
 
 def log_calendar_report(calendared: pd.DataFrame, configuration: Config, months_per_role: dict) -> None:
     """Action 7: per role, its months, rows and money, as a table; and the SQL of the calendar per month."""
-    configuration.log_action(STEP_02_LABEL, 7, "per role: months, rows, what fell due and what was renewed "
+    configuration.log_action(STEP_1_3_LABEL, 7, "per role: months, rows, what fell due and what was renewed "
                                             "(the projection shows no renewal: it was wiped)")
     summary_rows = []
     for role in ROLES_IN_ORDER:
@@ -1289,12 +1355,12 @@ def log_calendar_report(calendared: pd.DataFrame, configuration: Config, months_
             "tasa_unidades": renewed_units / pipeline_units if pipeline_units > 0 else np.nan,
         })
     configuration.show_table(pd.DataFrame(summary_rows))
-    configuration.show_query(STEP_02_LABEL, "the calendar per role", roles_query(configuration))
-    configuration.show_query(STEP_02_LABEL, "the calendar per month", calendar_query(configuration))
+    configuration.show_query(STEP_1_3_LABEL, "the calendar per role", roles_query(configuration))
+    configuration.show_query(STEP_1_3_LABEL, "the calendar per month", calendar_query(configuration))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 03 · FINE TABLE  (until 25-oct-2026: step_03_fine_table.py)
+# STEP 1.4 · FINE TABLE  (until 25-oct-2026: step_03_fine_table.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The fine table: every row of the raw, with the ids that name it.
 #
@@ -1310,7 +1376,7 @@ def log_calendar_report(calendared: pd.DataFrame, configuration: Config, months_
 # The discount bucket is DERIVED here from the exact discount with the edges of the Config
 # (a null discount goes to "sin_dato"). A fine row is its unit, its extra_revalorizacion
 # values and its exact discount (the extract comes one row per exact discount): the grain is
-# checked on them. Nothing is aggregated here and no measure changes; step 04 adds the fine
+# checked on them. Nothing is aggregated here and no measure changes; step 1.5 adds the fine
 # rows of each unit. The ids are text: the core and the BI join on them (no hash keys).
 #
 # Actions (logged as they are done):
@@ -1326,18 +1392,18 @@ def log_calendar_report(calendared: pd.DataFrame, configuration: Config, months_
 # Checks (logged as they are made, numbered, at the level of their status):
 #    1. every exact discount falls in one bucket (a null one in "sin_dato")
 #    2. one row per forecast unit, revaluation values and exact discount (the grain of the raw)
-#    3. same rows, same order, no column of step 02 changed
+#    3. same rows, same order, no column of step 1.3 changed
 #
-# Output: the raw of step 02 with the discount bucket and three id columns (fs_id, fu_id, uplift_cell_id);
+# Output: the raw of step 1.3 with the discount bucket and three id columns (fs_id, fu_id, uplift_cell_id);
 # not written to SQL (sff_nucleo carries every fine row).
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_03_LABEL = "03"
-STEP_03_NAME = "FINE TABLE"
-STEP_03_PURPOSE = ("name every row of the raw by the contexts it takes its numbers from: its rate series (fs_id), its "
+STEP_1_4_LABEL = "1.4"
+STEP_1_4_NAME = "FINE TABLE"
+STEP_1_4_PURPOSE = ("name every row of the raw by the contexts it takes its numbers from: its rate series (fs_id), its "
                 "forecast unit (series in its month, fu_id) and its uplift cell (price context, uplift_cell_id); "
                 "nothing is aggregated")
-STEP_03_ACTIONS = ["build fs_id from the rate series columns",
+STEP_1_4_ACTIONS = ["build fs_id from the rate series columns",
                 "build fu_id: fs_id | month",
                 "derive the discount bucket from the exact discount",
                 "build uplift_cell_id from the uplift cell columns",
@@ -1345,7 +1411,7 @@ STEP_03_ACTIONS = ["build fs_id from the rate series columns",
                 "keep the fine table in memory (sff_nucleo writes every fine row)",
                 "count the checks; stop if any failed",
                 "show the rows per discount bucket and a few rows with their ids, as tables"]
-STEP_03_OUTPUT = ("the raw with the discount bucket and three id columns (one row per raw row; in memory, "
+STEP_1_4_OUTPUT = ("the raw with the discount bucket and three id columns (one row per raw row; in memory, "
                "sff_nucleo writes it)")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -1356,61 +1422,61 @@ FINE_ROW_GROUP = "_fila"
 
 def build_fine_table(calendared: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """Add the ids that name every row; check the grain."""
-    configuration.log_step_start(STEP_03_LABEL, STEP_03_NAME, STEP_03_PURPOSE, STEP_03_ACTIONS, STEP_03_OUTPUT)
+    configuration.log_step_start(STEP_1_4_LABEL, STEP_1_4_NAME, STEP_1_4_PURPOSE, STEP_1_4_ACTIONS, STEP_1_4_OUTPUT)
     check_log = []
     fine_table = calendared.copy()
 
     # [1] the rate series of every row
     fine_table[SERIES_ID_COLUMN] = join_columns(fine_table, configuration.rate_series_columns)
-    configuration.log_action(STEP_03_LABEL, 1, f"fs_id from {len(configuration.rate_series_columns)} columns "
+    configuration.log_action(STEP_1_4_LABEL, 1, f"fs_id from {len(configuration.rate_series_columns)} columns "
                                             f"({', '.join(configuration.rate_series_columns)}): "
                                             f"{fine_table[SERIES_ID_COLUMN].nunique():,} series")
 
     # [2] the forecast unit: the series in its month
     fine_table[UNIT_ID_COLUMN] = (fine_table[SERIES_ID_COLUMN] + ID_FIELD_SEPARATOR
                                   + fine_table[configuration.period_col].astype(str))
-    configuration.log_action(STEP_03_LABEL, 2, f"fu_id = fs_id | month: {fine_table[UNIT_ID_COLUMN].nunique():,} forecast units")
+    configuration.log_action(STEP_1_4_LABEL, 2, f"fu_id = fs_id | month: {fine_table[UNIT_ID_COLUMN].nunique():,} forecast units")
 
     # [3] the discount bucket, from the exact discount (the Config's edges; null → sin_dato)
     if configuration.discount_value_column:
         fine_table[configuration.discount_bucket_column] = discount_bucket_labels(
             fine_table[configuration.discount_value_column], configuration.discount_bucket_edges)
         unknown_share = (fine_table[configuration.discount_bucket_column] == UNKNOWN_DISCOUNT_BUCKET).mean()
-        configuration.log_action(STEP_03_LABEL, 3, f"{configuration.discount_bucket_column} from "
+        configuration.log_action(STEP_1_4_LABEL, 3, f"{configuration.discount_bucket_column} from "
                                                 f"{configuration.discount_value_column}: "
                                                 f"{fine_table[configuration.discount_bucket_column].nunique()} buckets; "
                                                 f"{unknown_share:.1%} of the rows '{UNKNOWN_DISCOUNT_BUCKET}'")
     else:
-        configuration.log_action(STEP_03_LABEL, 3, "no exact discount declared: no bucket")
+        configuration.log_action(STEP_1_4_LABEL, 3, "no exact discount declared: no bucket")
 
     # [4] the uplift cell: the price context of the row
     fine_table[UPLIFT_CELL_ID_COLUMN] = join_columns(fine_table, configuration.uplift_cell_columns)
-    configuration.log_action(STEP_03_LABEL, 4, f"uplift_cell_id from {', '.join(configuration.uplift_cell_columns)}: "
+    configuration.log_action(STEP_1_4_LABEL, 4, f"uplift_cell_id from {', '.join(configuration.uplift_cell_columns)}: "
                                             f"{fine_table[UPLIFT_CELL_ID_COLUMN].nunique():,} uplift cells")
 
     # [5] the checks
-    configuration.log_action(STEP_03_LABEL, 5, "checking the bucket, the grain and that nothing else changed")
+    configuration.log_action(STEP_1_4_LABEL, 5, "checking the bucket, the grain and that nothing else changed")
     check_discount_bucket(fine_table, configuration, check_log)
     check_grain(fine_table, configuration, check_log)
     new_columns = [column_name for column_name in fine_table.columns if column_name not in calendared.columns]
     expected_new_columns = len(ADDED_ID_COLUMNS) + (1 if configuration.discount_value_column else 0)
-    configuration.log_check(STEP_03_LABEL, check_log, "same rows, same order, no column of step 02 changed",
+    configuration.log_check(STEP_1_4_LABEL, check_log, "same rows, same order, no column of step 1.3 changed",
                             fine_table[list(calendared.columns)].equals(calendared)
                             and len(new_columns) == expected_new_columns,
                             failure_detail="the fine table changed the rows or the columns it received",
                             context=f"{len(fine_table):,} rows · {len(new_columns)} columns added")
 
-    # [6] the fine table is NOT written to SQL: sff_nucleo carries every fine row with its ids (step 24), and writing
+    # [6] the fine table is NOT written to SQL: sff_nucleo carries every fine row with its ids (step 8.3), and writing
     #     the 1M rows here cost 3.5 minutes of the real run for a table nobody read
-    configuration.log_action(STEP_03_LABEL, 6, "the fine table stays in memory (every fine row is written in sff_nucleo, step 24)")
+    configuration.log_action(STEP_1_4_LABEL, 6, "the fine table stays in memory (every fine row is written in sff_nucleo, step 8.3)")
 
     # [7] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_03_LABEL, 7, "counting the checks")
-    configuration.log_check_summary(STEP_03_LABEL, STEP_03_NAME, check_log)
+    configuration.log_action(STEP_1_4_LABEL, 7, "counting the checks")
+    configuration.log_check_summary(STEP_1_4_LABEL, STEP_1_4_NAME, check_log)
 
     # [8] the rows per discount bucket, and a few rows with their ids
     if configuration.discount_value_column:
-        configuration.log_action(STEP_03_LABEL, 8, "rows and money due per discount bucket:")
+        configuration.log_action(STEP_1_4_LABEL, 8, "rows and money due per discount bucket:")
         bucket_column = configuration.discount_bucket_column
         configuration.show_table(fine_table.groupby(bucket_column, dropna=False)
                                  .agg(filas=(bucket_column, "size"),
@@ -1418,7 +1484,7 @@ def build_fine_table(calendared: pd.DataFrame, configuration: Config) -> pd.Data
                                       descuento_max=(configuration.discount_value_column, "max"),
                                       usd_vence=(configuration.pipeline_usd_col, "sum"))
                                  .reset_index())
-    configuration.logger.doc(f"[{STEP_03_LABEL}] a few rows with their ids:")
+    configuration.logger.doc(f"[{STEP_1_4_LABEL}] a few rows with their ids:")
     configuration.show_table(fine_table[[configuration.period_col, UNIT_ID_COLUMN, UPLIFT_CELL_ID_COLUMN]
                                         + configuration.fine_row_columns].head(configuration.example_rows_shown))
     return fine_table
@@ -1435,14 +1501,14 @@ def fine_row_values(fine_table: pd.DataFrame, configuration: Config) -> pd.Serie
 def check_discount_bucket(fine_table: pd.DataFrame, configuration: Config, check_log: list) -> None:
     """Check 1: every exact discount has a bucket; only a null discount is 'sin_dato'."""
     if not configuration.discount_value_column:
-        configuration.log_not_evaluated(STEP_03_LABEL, check_log, "every exact discount falls in one bucket",
+        configuration.log_not_evaluated(STEP_1_4_LABEL, check_log, "every exact discount falls in one bucket",
                                         "no exact discount declared")
         return
     buckets = fine_table[configuration.discount_bucket_column]
     discount_values = fine_table[configuration.discount_value_column]
     without_bucket = fine_table[buckets.isna()]
     wrongly_unknown = int(((buckets == UNKNOWN_DISCOUNT_BUCKET) & discount_values.notna()).sum())
-    configuration.log_check(STEP_03_LABEL, check_log, f"every exact discount falls in one bucket "
+    configuration.log_check(STEP_1_4_LABEL, check_log, f"every exact discount falls in one bucket "
                                                    f"(a null one in '{UNKNOWN_DISCOUNT_BUCKET}')",
                             without_bucket.empty and wrongly_unknown == 0,
                             failure_detail=f"{len(without_bucket):,} rows without a bucket · {wrongly_unknown:,} known "
@@ -1464,7 +1530,7 @@ def check_grain(fine_table: pd.DataFrame, configuration: Config, check_log: list
     repeated_rows_count = int(fine_table.duplicated(grain_columns).sum())
     check_description = "one row per forecast unit, revaluation values and exact discount (the grain of the raw)"
     if repeated_rows_count == 0:
-        configuration.log_check(STEP_03_LABEL, check_log, check_description, True,
+        configuration.log_check(STEP_1_4_LABEL, check_log, check_description, True,
                                 context=f"{len(fine_table):,} rows = {len(fine_table):,} distinct fine rows")
         return
 
@@ -1492,13 +1558,13 @@ def check_grain(fine_table: pd.DataFrame, configuration: Config, check_log: list
     shown_columns = ([configuration.period_col, UNIT_ID_COLUMN] + configuration.fine_row_columns
                      + [column_name for column_name in splitting_columns if column_name not in configuration.fine_row_columns]
                      + configuration.core_measures)
-    configuration.log_check(STEP_03_LABEL, check_log, check_description, False,
+    configuration.log_check(STEP_1_4_LABEL, check_log, check_description, False,
                             failure_detail=f"{repeated_rows_count:,} rows repeat a fine row already seen "
                                            f"({repeated_mask.sum():,} rows in {repeated_groups:,} groups). {cause_text}",
                             examples=first_group[shown_columns])
 
     # the same problem, in SQL, to reproduce it on the extract
-    configuration.logger.doc(f"[{STEP_03_LABEL}] to reproduce it in SQL (the declared grain, the groups with more than "
+    configuration.logger.doc(f"[{STEP_1_4_LABEL}] to reproduce it in SQL (the declared grain, the groups with more than "
                              f"one row, and what differs inside them):")
     print(grain_reproduction_sql(configuration, list(splitting_columns)))
 
@@ -1554,7 +1620,7 @@ def columns_that_split_the_grain(repeated_rows: pd.DataFrame, grain_columns: lis
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 04 · FORECAST UNITS  (until 25-oct-2026: step_04_forecast_units.py)
+# STEP 1.5 · FORECAST UNITS  (until 25-oct-2026: step_04_forecast_units.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The forecast units: one row per rate series in its month.
 #
@@ -1580,20 +1646,20 @@ def columns_that_split_the_grain(repeated_rows: pd.DataFrame, grain_columns: lis
 #
 # Output: the forecast units (one row per fu_id: ids, series columns, month, role, current-month state,
 # number of fine rows, the four measures summed), in memory. The time_series rows were separated in
-# step 01: every unit here is of the renewal universe.
+# step 1.2: every unit here is of the renewal universe.
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_04_LABEL = "04"
-STEP_04_NAME = "FORECAST UNITS"
-STEP_04_PURPOSE = ("add up the fine rows of every forecast unit (a rate series in its month): the renewal rate is "
+STEP_1_5_LABEL = "1.5"
+STEP_1_5_NAME = "FORECAST UNITS"
+STEP_1_5_PURPOSE = ("add up the fine rows of every forecast unit (a rate series in its month): the renewal rate is "
                 "studied per unit, because the revaluation values change the price, not the rate")
-STEP_04_ACTIONS = ["group the fine rows by forecast unit",
+STEP_1_5_ACTIONS = ["group the fine rows by forecast unit",
                 "take the description of each unit (series, month, role) from its first row",
                 "add up the four measures and count the fine rows of each unit",
                 "check the units and that the money is conserved (checks 1-3)",
                 "count the checks; stop if any failed",
                 "show the units per role and the fine rows per unit, as tables"]
-STEP_04_OUTPUT = "one row per forecast unit with its four measures summed (in memory)"
+STEP_1_5_OUTPUT = "one row per forecast unit with its four measures summed (in memory)"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 # Money is conserved when the difference is below a cent or a billionth of the total
@@ -1602,20 +1668,20 @@ STEP_04_OUTPUT = "one row per forecast unit with its four measures summed (in me
 
 def build_forecast_units(fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """Add up the fine rows of every forecast unit; check conservation."""
-    configuration.log_step_start(STEP_04_LABEL, STEP_04_NAME, STEP_04_PURPOSE, STEP_04_ACTIONS, STEP_04_OUTPUT)
+    configuration.log_step_start(STEP_1_5_LABEL, STEP_1_5_NAME, STEP_1_5_PURPOSE, STEP_1_5_ACTIONS, STEP_1_5_OUTPUT)
     check_log = []
     measures = configuration.core_measures
 
     # [1] the fine rows of each unit
     grouped_by_unit = fine_table.groupby(UNIT_ID_COLUMN, sort=False)
-    configuration.log_action(STEP_04_LABEL, 1, f"{len(fine_table):,} fine rows grouped into "
+    configuration.log_action(STEP_1_5_LABEL, 1, f"{len(fine_table):,} fine rows grouped into "
                                             f"{grouped_by_unit.ngroups:,} forecast units")
 
     # [2] the description of each unit: constant inside it (they come from the series and the month)
     description_columns = ([SERIES_ID_COLUMN] + configuration.rate_series_columns
                            + [configuration.period_col, CALENDAR_ROLE_COLUMN, CURRENT_MONTH_COLUMN])
     forecast_units = grouped_by_unit[description_columns].first()
-    configuration.log_action(STEP_04_LABEL, 2, f"each unit described by {len(description_columns)} columns "
+    configuration.log_action(STEP_1_5_LABEL, 2, f"each unit described by {len(description_columns)} columns "
                                             f"(series, month, role)")
 
     # [3] the measures, summed (a unit whose values are all null stays null), and the fine rows
@@ -1623,15 +1689,15 @@ def build_forecast_units(fine_table: pd.DataFrame, configuration: Config) -> pd.
     forecast_units[FINE_ROWS_COLUMN] = grouped_by_unit.size()
     forecast_units = forecast_units.reset_index()
     forecast_units = forecast_units[[UNIT_ID_COLUMN] + description_columns + [FINE_ROWS_COLUMN] + measures]
-    configuration.log_action(STEP_04_LABEL, 3, f"measures summed; {forecast_units[FINE_ROWS_COLUMN].mean():.2f} "
+    configuration.log_action(STEP_1_5_LABEL, 3, f"measures summed; {forecast_units[FINE_ROWS_COLUMN].mean():.2f} "
                                             f"fine rows per unit on average")
 
     # [4] the checks
-    configuration.log_action(STEP_04_LABEL, 4, "checking the units and that the money is conserved")
+    configuration.log_action(STEP_1_5_LABEL, 4, "checking the units and that the money is conserved")
     check_money_conserved_into_units(fine_table, forecast_units, configuration, check_log)
     check_renewals_by_month(forecast_units, configuration, check_log)
-    # a unit at 0 units due: either the calendar wiped it on purpose (step 02: the pipeline of a 1-year
-    # licence sold or renewed from the current month on; step 20 projects it), or the extract brings it at 0
+    # a unit at 0 units due: either the calendar wiped it on purpose (step 1.3: the pipeline of a 1-year
+    # licence sold or renewed from the current month on; step 7.2 projects it), or the extract brings it at 0
     units_without_pipeline = forecast_units[forecast_units[configuration.pipeline_units_col] == 0]
     if S0_PIPELINE_UNITS_COLUMN in fine_table.columns:
         due_in_extract = fine_table.groupby(UNIT_ID_COLUMN)[S0_PIPELINE_UNITS_COLUMN].sum()
@@ -1639,16 +1705,16 @@ def build_forecast_units(fine_table: pd.DataFrame, configuration: Config) -> pd.
     else:
         wiped_on_purpose = pd.Series(False, index=units_without_pipeline.index)
     zero_in_extract = units_without_pipeline[~wiped_on_purpose]
-    configuration.log_action(STEP_04_LABEL, 4, f"units at 0 units due: {int(wiped_on_purpose.sum()):,} wiped on purpose by the calendar "
-                                            f"(step 02, projected in step 20) · {len(zero_in_extract):,} at 0 in the extract")
-    configuration.log_check(STEP_04_LABEL, check_log, "every unit has something falling due in the extract", zero_in_extract.empty,
+    configuration.log_action(STEP_1_5_LABEL, 4, f"units at 0 units due: {int(wiped_on_purpose.sum()):,} wiped on purpose by the calendar "
+                                            f"(step 1.3, projected in step 7.2) · {len(zero_in_extract):,} at 0 in the extract")
+    configuration.log_check(STEP_1_5_LABEL, check_log, "every unit has something falling due in the extract", zero_in_extract.empty,
                             failure_detail=f"{len(zero_in_extract):,} units at 0 units due in the extract itself: their rate is undefined",
                             blocking=False,
                             examples=zero_in_extract[[UNIT_ID_COLUMN, configuration.period_col] + measures])
 
     # [5] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_04_LABEL, 5, "counting the checks")
-    configuration.log_check_summary(STEP_04_LABEL, STEP_04_NAME, check_log)
+    configuration.log_action(STEP_1_5_LABEL, 5, "counting the checks")
+    configuration.log_check_summary(STEP_1_5_LABEL, STEP_1_5_NAME, check_log)
 
     # [6] what the units look like
     log_units_report(forecast_units, configuration)
@@ -1666,20 +1732,20 @@ def check_money_conserved_into_units(fine_table: pd.DataFrame, forecast_units: p
         if abs(units_total - fine_total) > tolerance:
             differences[measure_column] = units_total - fine_total
     pipeline_usd = float(forecast_units[configuration.pipeline_usd_col].sum())
-    configuration.log_check(STEP_04_LABEL, check_log, "the four measures are conserved: Σ fine = Σ units", not differences,
+    configuration.log_check(STEP_1_5_LABEL, check_log, "the four measures are conserved: Σ fine = Σ units", not differences,
                             failure_detail=f"measures that changed when summed (units − fine): {differences}",
                             context=f"${pipeline_usd:,.0f} due in both tables")
 
 
 def check_renewals_by_month(forecast_units: pd.DataFrame, configuration: Config, check_log: list) -> None:
-    """Check 2: after step 02, a closed unit has a renewal (0 or more) and a projection unit
+    """Check 2: after step 1.3, a closed unit has a renewal (0 or more) and a projection unit
     has none (null). A null closed unit or a projection unit with a number means the
     fine table lost the calendar on the way."""
     renewed_units = forecast_units[configuration.renewed_units_col]
     projection_units = forecast_units[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION
     null_closed_units = int((~projection_units & renewed_units.isna()).sum())
     booked_projection_units = int((projection_units & renewed_units.notna()).sum())
-    configuration.log_check(STEP_04_LABEL, check_log,
+    configuration.log_check(STEP_1_5_LABEL, check_log,
                             "renewals are numbers in closed months and null from the current month on",
                             null_closed_units == 0 and booked_projection_units == 0,
                             failure_detail=f"{null_closed_units:,} closed units with a null renewal · "
@@ -1690,7 +1756,7 @@ def check_renewals_by_month(forecast_units: pd.DataFrame, configuration: Config,
 
 def log_units_report(forecast_units: pd.DataFrame, configuration: Config) -> None:
     """Action 6: units per role and fine rows per unit, as tables."""
-    configuration.log_action(STEP_04_LABEL, 6, "units per role (series = distinct rate series with a unit in that role):")
+    configuration.log_action(STEP_1_5_LABEL, 6, "units per role (series = distinct rate series with a unit in that role):")
     per_role_rows = []
     for role in ROLES_IN_ORDER:
         role_units = forecast_units[forecast_units[CALENDAR_ROLE_COLUMN] == role]
@@ -1699,14 +1765,14 @@ def log_units_report(forecast_units: pd.DataFrame, configuration: Config) -> Non
                               "usd_vence": role_units[configuration.pipeline_usd_col].sum()})
     configuration.show_table(pd.DataFrame(per_role_rows))
 
-    configuration.logger.doc(f"[{STEP_04_LABEL}] fine rows per unit (how many fine rows were added into one unit):")
+    configuration.logger.doc(f"[{STEP_1_5_LABEL}] fine rows per unit (how many fine rows were added into one unit):")
     fine_rows_count = (forecast_units[FINE_ROWS_COLUMN].value_counts().sort_index()
                           .rename_axis(FINE_ROWS_COLUMN).reset_index(name="unidades"))
     configuration.show_table(fine_rows_count)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 05 · SERIES AND ROUTES  (until 25-oct-2026: step_05_series_routes.py)
+# STEP 1.6 · SERIES AND ROUTES  (until 25-oct-2026: step_05_series_routes.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The series: which months each one has, and how it will be treated.
 #
@@ -1717,7 +1783,7 @@ def log_units_report(forecast_units: pd.DataFrame, configuration: Config) -> Non
 #       solo_historia  nothing to predict: kept, it lends its history to its relatives
 #       solo_futuro    nothing to learn from: predicted from its relatives
 # Nothing is filtered: every series is labelled, none is dropped. Every series is of the renewal
-# universe: the time_series rows were separated in step 01.
+# universe: the time_series rows were separated in step 1.2.
 #
 # Actions (logged as they are done):
 #   1. group the forecast units by series
@@ -1736,18 +1802,18 @@ def log_units_report(forecast_units: pd.DataFrame, configuration: Config) -> Non
 # route, units and USD to predict), in memory.
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_05_LABEL = "05"
-STEP_05_NAME = "SERIES AND ROUTES"
-STEP_05_PURPOSE = ("describe every rate series by the months it has (coverage) and decide how it will be treated "
+STEP_1_6_LABEL = "1.6"
+STEP_1_6_NAME = "SERIES AND ROUTES"
+STEP_1_6_PURPOSE = ("describe every rate series by the months it has (coverage) and decide how it will be treated "
                 "(route): estimated, used only as history, or predicted from its relatives; nothing is dropped")
-STEP_05_ACTIONS = ["group the forecast units by series",
+STEP_1_6_ACTIONS = ["group the forecast units by series",
                 "count the months of each series in each role; first and last month",
                 "coverage and route of every series",
                 "the money each series has to predict (due from the current month on)",
                 "check the series (checks 1-2)",
                 "count the checks; stop if any failed",
                 "show the series and the money per route, as a table"]
-STEP_05_OUTPUT = "one row per series with its coverage and route (in memory)"
+STEP_1_6_OUTPUT = "one row per series with its coverage and route (in memory)"
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 COVERAGE_SEPARATOR = "+"
@@ -1770,14 +1836,14 @@ def route_from_coverage(roles_present: set) -> str:
 
 def build_series_routes(forecast_units: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     """One row per series: its months per role, coverage and route; checked."""
-    configuration.log_step_start(STEP_05_LABEL, STEP_05_NAME, STEP_05_PURPOSE, STEP_05_ACTIONS, STEP_05_OUTPUT)
+    configuration.log_step_start(STEP_1_6_LABEL, STEP_1_6_NAME, STEP_1_6_PURPOSE, STEP_1_6_ACTIONS, STEP_1_6_OUTPUT)
     check_log = []
     period_column = configuration.period_col
 
     # [1] the units of each series
     grouped_by_series = forecast_units.groupby(SERIES_ID_COLUMN, sort=True)
     series_table = grouped_by_series[configuration.rate_series_columns].first()
-    configuration.log_action(STEP_05_LABEL, 1, f"{len(forecast_units):,} forecast units grouped into "
+    configuration.log_action(STEP_1_6_LABEL, 1, f"{len(forecast_units):,} forecast units grouped into "
                                             f"{len(series_table):,} series")
 
     # [2] months per role, first and last month
@@ -1788,7 +1854,7 @@ def build_series_routes(forecast_units: pd.DataFrame, configuration: Config) -> 
     series_table["primer_mes"] = grouped_by_series[period_column].min()
     series_table["ultimo_mes"] = grouped_by_series[period_column].max()
     series_table["meses"] = grouped_by_series.size()
-    configuration.log_action(STEP_05_LABEL, 2, f"months counted per role; a series has "
+    configuration.log_action(STEP_1_6_LABEL, 2, f"months counted per role; a series has "
                                             f"{series_table['meses'].median():.0f} months (median)")
 
     # [3] coverage and route
@@ -1797,7 +1863,7 @@ def build_series_routes(forecast_units: pd.DataFrame, configuration: Config) -> 
     series_table[COVERAGE_COLUMN] = roles_of_series.map(
         lambda roles: COVERAGE_SEPARATOR.join(role for role in ROLES_IN_ORDER if role in roles))
     series_table[ROUTE_COLUMN] = roles_of_series.map(route_from_coverage)
-    configuration.log_action(STEP_05_LABEL, 3, f"routes: {series_table[ROUTE_COLUMN].value_counts().to_dict()}")
+    configuration.log_action(STEP_1_6_LABEL, 3, f"routes: {series_table[ROUTE_COLUMN].value_counts().to_dict()}")
 
     # [4] what each series has to predict: what falls due from the current month on
     to_predict = forecast_units[CALENDAR_ROLE_COLUMN] == ROLE_PROJECTION
@@ -1806,16 +1872,16 @@ def build_series_routes(forecast_units: pd.DataFrame, configuration: Config) -> 
     series_table["usd_por_predecir"] = predicted_units[configuration.pipeline_usd_col].sum()
     series_table[["unidades_por_predecir", "usd_por_predecir"]] = series_table[["unidades_por_predecir", "usd_por_predecir"]].fillna(0)
     series_table = series_table.reset_index()
-    configuration.log_action(STEP_05_LABEL, 4, f"${series_table['usd_por_predecir'].sum():,.0f} to predict across "
+    configuration.log_action(STEP_1_6_LABEL, 4, f"${series_table['usd_por_predecir'].sum():,.0f} to predict across "
                                             f"{int((series_table['usd_por_predecir'] > 0).sum()):,} series")
 
     # [5] the checks
-    configuration.log_action(STEP_05_LABEL, 5, "checking the series")
+    configuration.log_action(STEP_1_6_LABEL, 5, "checking the series")
     check_series(forecast_units, series_table, configuration, check_log)
 
     # [6] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_05_LABEL, 6, "counting the checks")
-    configuration.log_check_summary(STEP_05_LABEL, STEP_05_NAME, check_log)
+    configuration.log_action(STEP_1_6_LABEL, 6, "counting the checks")
+    configuration.log_check_summary(STEP_1_6_LABEL, STEP_1_6_NAME, check_log)
 
     # [7] series and money per route
     log_routes_report(series_table, configuration)
@@ -1828,7 +1894,7 @@ def check_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, confi
     # [1] every unit has its series in the table, and every series a known route
     units_without_series = int((~forecast_units[SERIES_ID_COLUMN].isin(set(series_table[SERIES_ID_COLUMN]))).sum())
     unknown_routes = sorted(set(series_table[ROUTE_COLUMN]) - set(ROUTES_IN_ORDER))
-    configuration.log_check(STEP_05_LABEL, check_log,
+    configuration.log_check(STEP_1_6_LABEL, check_log,
                             "every forecast unit belongs to a series of the table, and every series has a route",
                             units_without_series == 0 and not unknown_routes,
                             failure_detail=f"{units_without_series:,} units without series · unknown routes {unknown_routes}",
@@ -1837,7 +1903,7 @@ def check_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, confi
     # [2] a series with months to predict has something due in them
     predictable_routes = series_table[ROUTE_COLUMN].isin([ROUTE_PREDICTABLE, ROUTE_FUTURE_ONLY])
     empty_future = series_table[predictable_routes & (series_table["unidades_por_predecir"] == 0)]
-    configuration.log_check(STEP_05_LABEL, check_log, "every series with something to predict has pipeline to predict",
+    configuration.log_check(STEP_1_6_LABEL, check_log, "every series with something to predict has pipeline to predict",
                             empty_future.empty,
                             failure_detail=f"{len(empty_future):,} series have future months with 0 units due",
                             blocking=False,
@@ -1847,7 +1913,7 @@ def check_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, confi
 
 def log_routes_report(series_table: pd.DataFrame, configuration: Config) -> None:
     """Action 7: series and money to predict per route, as a table."""
-    configuration.log_action(STEP_05_LABEL, 7, "series and money to predict per route:")
+    configuration.log_action(STEP_1_6_LABEL, 7, "series and money to predict per route:")
     total_usd = series_table["usd_por_predecir"].sum()
     route_rows = []
     for route in ROUTES_IN_ORDER:
@@ -1859,7 +1925,7 @@ def log_routes_report(series_table: pd.DataFrame, configuration: Config) -> None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# STEP 06 · RATE SERIES  (until 25-oct-2026: step_06_rate_series.py)
+# STEP 1.7 · RATE SERIES  (until 25-oct-2026: step_06_rate_series.py)
 # ═══════════════════════════════════════════════════════════════════════════════════
 # The rate series: the renewal rate of every unit, and of every series.
 #
@@ -1896,15 +1962,15 @@ def log_routes_report(series_table: pd.DataFrame, configuration: Config) -> None
 #    4. every series has its summary row
 #
 # Output: (the forecast units with the gap rows and the columns tasa and sintetica, the series summary),
-# in memory: the gap rows reach sff_nucleo (step 24) and the summary the forecast series dimension.
+# in memory: the gap rows reach sff_nucleo (step 8.3) and the summary the forecast series dimension.
 
 # ─── the step ────────────────────────────────────────────────────────────────────
-STEP_06_LABEL = "06"
-STEP_06_NAME = "RATE SERIES"
-STEP_06_PURPOSE = ("prepare the renewal rate: fill the gaps inside the history of every estimable series (rate "
+STEP_1_7_LABEL = "1.7"
+STEP_1_7_NAME = "RATE SERIES"
+STEP_1_7_PURPOSE = ("prepare the renewal rate: fill the gaps inside the history of every estimable series (rate "
                 "undefined, never 0 %), compute the rate of every unit only where it is truth, and summarise every "
                 "series by its support, its own rate, its binomial error and its sign")
-STEP_06_ACTIONS = ["find the series that get gaps and their history span",
+STEP_1_7_ACTIONS = ["find the series that get gaps and their history span",
                 "add the gap rows",
                 "the rate of every unit",
                 "the summary of every series: support, own rate, binomial error",
@@ -1912,7 +1978,7 @@ STEP_06_ACTIONS = ["find the series that get gaps and their history span",
                 "check the gaps, the rates and the summary (checks 1-4)",
                 "count the checks; stop if any failed",
                 "show the series by support and the largest ones, as tables"]
-STEP_06_OUTPUT = ("the forecast units with gap rows and the rate of every unit · one row per series with its support, "
+STEP_1_7_OUTPUT = ("the forecast units with gap rows and the rate of every unit · one row per series with its support, "
                "own rate, error and sign (in memory)")
 
 # ─── named constants ─────────────────────────────────────────────────────────────
@@ -1937,14 +2003,14 @@ def wilson_half_width_pp(rates: np.ndarray, supports: np.ndarray, z: float) -> n
 
 def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, configuration: Config) -> tuple:
     """Gaps, the rate of every unit and the summary of every series; checked."""
-    configuration.log_step_start(STEP_06_LABEL, STEP_06_NAME, STEP_06_PURPOSE, STEP_06_ACTIONS, STEP_06_OUTPUT)
+    configuration.log_step_start(STEP_1_7_LABEL, STEP_1_7_NAME, STEP_1_7_PURPOSE, STEP_1_7_ACTIONS, STEP_1_7_OUTPUT)
     check_log = []
 
     # [1] the series that get gaps: the estimated ones; their closed span
     estimable_series = series_table.loc[series_table[ROUTE_COLUMN] == ROUTE_PREDICTABLE, SERIES_ID_COLUMN]
     truth_units = forecast_units[forecast_units[SERIES_ID_COLUMN].isin(set(estimable_series))
                                  & forecast_units[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)]
-    configuration.log_action(STEP_06_LABEL, 1, f"{len(estimable_series):,} estimable series (predecible) with "
+    configuration.log_action(STEP_1_7_LABEL, 1, f"{len(estimable_series):,} estimable series (predecible) with "
                                             f"{len(truth_units):,} units in closed months")
 
     # [2] the gap rows
@@ -1953,7 +2019,7 @@ def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, 
     rated_units[SYNTHETIC_COLUMN] = 0
     if len(gap_rows):
         rated_units = pd.concat([rated_units, gap_rows[rated_units.columns]], ignore_index=True)
-    configuration.log_action(STEP_06_LABEL, 2, f"{len(gap_rows):,} gap rows added in "
+    configuration.log_action(STEP_1_7_LABEL, 2, f"{len(gap_rows):,} gap rows added in "
                                             f"{gap_rows[SERIES_ID_COLUMN].nunique() if len(gap_rows) else 0:,} series")
 
     # [3] the rate of every unit: only where it is truth
@@ -1963,14 +2029,14 @@ def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, 
     rated_units[RATE_COLUMN] = np.where(rate_is_truth,
                                         rated_units[configuration.renewed_units_col] / pipeline_units.where(pipeline_units > 0),
                                         np.nan)
-    configuration.log_action(STEP_06_LABEL, 3, f"rate computed in {int(rate_is_truth.sum()):,} units; null in the other "
+    configuration.log_action(STEP_1_7_LABEL, 3, f"rate computed in {int(rate_is_truth.sum()):,} units; null in the other "
                                             f"{int((~rate_is_truth).sum()):,} (future, gaps, nothing due)")
 
     # [4] the summary of every series
     series_rate = summarise_series(rated_units, series_table, configuration)
     with_history = series_rate["meses_historia"] > 0
     below_floor = with_history & (series_rate["bajo_suelo"] == 1)
-    configuration.log_action(STEP_06_LABEL, 4, f"{len(series_rate):,} series summarised: {int(below_floor.sum()):,} with own "
+    configuration.log_action(STEP_1_7_LABEL, 4, f"{len(series_rate):,} series summarised: {int(below_floor.sum()):,} with own "
                                             f"history below the support floor ({configuration.support_floor:.0f}) and "
                                             f"{int((~with_history).sum()):,} with no own history carry "
                                             f"${series_rate.loc[below_floor | ~with_history, 'usd_por_predecir'].sum():,.0f} "
@@ -1978,15 +2044,15 @@ def build_rate_series(forecast_units: pd.DataFrame, series_table: pd.DataFrame, 
 
     # [5] the sign of every series
     series_rate[SIGN_COLUMN] = sign_of_series(rated_units, series_rate[SERIES_ID_COLUMN], configuration)
-    configuration.log_action(STEP_06_LABEL, 5, f"signs: {series_rate[SIGN_COLUMN].value_counts().to_dict()}")
+    configuration.log_action(STEP_1_7_LABEL, 5, f"signs: {series_rate[SIGN_COLUMN].value_counts().to_dict()}")
 
     # [6] the checks
-    configuration.log_action(STEP_06_LABEL, 6, "checking the gaps, the rates and the summary")
+    configuration.log_action(STEP_1_7_LABEL, 6, "checking the gaps, the rates and the summary")
     check_rate_series(rated_units, gap_rows, truth_units, series_rate, series_table, configuration, check_log)
 
     # [7] the count of the checks; stop if anything failed
-    configuration.log_action(STEP_06_LABEL, 7, "counting the checks")
-    configuration.log_check_summary(STEP_06_LABEL, STEP_06_NAME, check_log)
+    configuration.log_action(STEP_1_7_LABEL, 7, "counting the checks")
+    configuration.log_check_summary(STEP_1_7_LABEL, STEP_1_7_NAME, check_log)
 
     # [8] the series by support, and the largest ones
     log_rate_series_report(series_rate, configuration)
@@ -2083,7 +2149,7 @@ def check_rate_series(rated_units: pd.DataFrame, gap_rows: pd.DataFrame, truth_u
                   & (gap_rows[period_column].to_numpy() < gap_span["max"].to_numpy()))
         gaps_outside_span = int((~inside).sum())
     repeated_units = int(rated_units[UNIT_ID_COLUMN].duplicated().sum())
-    configuration.log_check(STEP_06_LABEL, check_log,
+    configuration.log_check(STEP_1_7_LABEL, check_log,
                             "gap rows only inside the history of estimable series, never repeating a unit",
                             gaps_outside_span == 0 and repeated_units == 0,
                             failure_detail=f"{gaps_outside_span:,} gap rows outside the span · {repeated_units:,} repeated units",
@@ -2094,27 +2160,27 @@ def check_rate_series(rated_units: pd.DataFrame, gap_rows: pd.DataFrame, truth_u
                                 & ((rated_units[SYNTHETIC_COLUMN] == 1)
                                    | ~rated_units[CALENDAR_ROLE_COLUMN].isin(TRUTH_ROLES)
                                    | (rated_units[configuration.pipeline_units_col] <= 0))).sum())
-    configuration.log_check(STEP_06_LABEL, check_log, "a rate only in real closed months with something due",
+    configuration.log_check(STEP_1_7_LABEL, check_log, "a rate only in real closed months with something due",
                             rate_where_not_truth == 0,
                             failure_detail=f"{rate_where_not_truth:,} units have a rate where there is no truth")
 
-    # [3] rates are proportions (a rate above 1 comes from renewing more than fell due: step 01 warned)
+    # [3] rates are proportions (a rate above 1 comes from renewing more than fell due: step 1.2 warned)
     out_of_range = rated_units[(rated_units[RATE_COLUMN] < 0) | (rated_units[RATE_COLUMN] > 1)]
-    configuration.log_check(STEP_06_LABEL, check_log, "every rate between 0 and 1", out_of_range.empty,
+    configuration.log_check(STEP_1_7_LABEL, check_log, "every rate between 0 and 1", out_of_range.empty,
                             failure_detail=f"{len(out_of_range):,} units with a rate outside [0, 1]", blocking=False,
                             examples=out_of_range[[UNIT_ID_COLUMN, configuration.pipeline_units_col,
                                                    configuration.renewed_units_col, RATE_COLUMN]])
 
     # [4] every series of the series table has its summary
     missing_series = len(set(series_table[SERIES_ID_COLUMN]) - set(series_rate[SERIES_ID_COLUMN]))
-    configuration.log_check(STEP_06_LABEL, check_log, "every series has its summary row", missing_series == 0,
+    configuration.log_check(STEP_1_7_LABEL, check_log, "every series has its summary row", missing_series == 0,
                             failure_detail=f"{missing_series:,} series without a summary",
                             context=f"{len(series_rate):,} series")
 
 
 def log_rate_series_report(series_rate: pd.DataFrame, configuration: Config) -> None:
     """Action 8: series and money to predict by support, and the largest series."""
-    configuration.log_action(STEP_06_LABEL, 8, f"series by support (n_propio: units due in a typical closed month; "
+    configuration.log_action(STEP_1_7_LABEL, 8, f"series by support (n_propio: units due in a typical closed month; "
                                             f"the floor is {configuration.support_floor:.0f}):")
     with_history = series_rate["meses_historia"] > 0
     groups = {"sin historia propia (solo_futuro)": ~with_history,
@@ -2127,7 +2193,7 @@ def log_rate_series_report(series_rate: pd.DataFrame, configuration: Config) -> 
                                             "pct_usd": series_rate.loc[mask, "usd_por_predecir"].sum() / total_usd if total_usd else 0.0}
                                            for group_name, mask in groups.items()]))
 
-    configuration.logger.doc(f"[{STEP_06_LABEL}] the {configuration.largest_series_shown} series with the most to predict "
+    configuration.logger.doc(f"[{STEP_1_7_LABEL}] the {configuration.largest_series_shown} series with the most to predict "
                              f"(own rate ± its binomial error of one month):")
     configuration.show_table(series_rate.nlargest(configuration.largest_series_shown, "usd_por_predecir")[
         [SERIES_ID_COLUMN, ROUTE_COLUMN, SIGN_COLUMN, "n_propio", "meses_historia", "huecos", "tasa_propia",
@@ -2139,13 +2205,16 @@ def log_rate_series_report(series_rate: pd.DataFrame, configuration: Config) -> 
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 BLOCK_LABEL = "B1"
+BLOCK_NAME = "PREPARATION"
+BLOCK_MISSION = ("the extract verified and in the tables every prediction starts from; it predicts nothing, runs once and "
+                 "can be persisted and resumed")
 
 # what the steps after the block read, and the table each one is persisted in
 PERSISTED_RESULTS = {"time_series_rows": TABLE_BLOCK_1_TIME_SERIES_ROWS, "fine_table": TABLE_BLOCK_1_FINE_TABLE,
                      "forecast_units": TABLE_BLOCK_1_FORECAST_UNITS, "series_table": TABLE_BLOCK_1_SERIES,
                      "rated_units": TABLE_BLOCK_1_RATED_UNITS, "series_rate": TABLE_BLOCK_1_SERIES_RATE}
-# the columns step 03 adds to the calendared raw (the fine table without them IS the calendared raw)
-STEP_03_ADDED_COLUMNS = (SERIES_ID_COLUMN, UNIT_ID_COLUMN, UPLIFT_CELL_ID_COLUMN)
+# the columns step 1.4 adds to the calendared raw (the fine table without them IS the calendared raw)
+STEP_1_4_ADDED_COLUMNS = (SERIES_ID_COLUMN, UNIT_ID_COLUMN, UPLIFT_CELL_ID_COLUMN)
 INDEX_COLUMN = "__indice__"          # the index of a table, persisted as a column (the fine table's index is the row id)
 INDEX_POSITION = -1
 # fields of the Config the block reads that do not change its results (where it writes, what it shows)
@@ -2178,34 +2247,35 @@ class PreparationBlock:
         if raw_extract is None:
             raw_extract = self.read_the_raw_extract()
         self.raw_extract = raw_extract
+        configuration.log_block_start(BLOCK_LABEL, 1, BLOCK_NAME, BLOCK_MISSION)
 
         started = time.time()
         self.validated_extract = validate_raw(self.raw_extract, configuration)
-        self.seconds["00 validate_raw"] = time.time() - started
+        self.seconds["1.1 validate_raw"] = time.time() - started
 
         started = time.time()
         self.leveled_raw, self.time_series_rows = validate_values_and_build_levels(self.validated_extract, configuration)
-        self.seconds["01 values_and_levels"] = time.time() - started
+        self.seconds["1.2 values_and_levels"] = time.time() - started
 
         started = time.time()
         self.calendared_raw = apply_calendar(self.leveled_raw, configuration)
-        self.seconds["02 calendar"] = time.time() - started
+        self.seconds["1.3 calendar"] = time.time() - started
 
         started = time.time()
         self.fine_table = build_fine_table(self.calendared_raw, configuration)
-        self.seconds["03 fine_table"] = time.time() - started
+        self.seconds["1.4 fine_table"] = time.time() - started
 
         started = time.time()
         self.forecast_units = build_forecast_units(self.fine_table, configuration)
-        self.seconds["04 forecast_units"] = time.time() - started
+        self.seconds["1.5 forecast_units"] = time.time() - started
 
         started = time.time()
         self.series_table = build_series_routes(self.forecast_units, configuration)
-        self.seconds["05 series_routes"] = time.time() - started
+        self.seconds["1.6 series_routes"] = time.time() - started
 
         started = time.time()
         self.rated_units, self.series_rate = build_rate_series(self.forecast_units, self.series_table, configuration)
-        self.seconds["06 rate_series"] = time.time() - started
+        self.seconds["1.7 rate_series"] = time.time() - started
 
         self.origin = "run"
         return self
@@ -2290,7 +2360,7 @@ class PreparationBlock:
         for attribute, table_name in PERSISTED_RESULTS.items():
             sql_frame = read_plain_table(table_name, configuration)
             setattr(self, attribute, frame_from_sql(sql_frame, manifest[manifest["tabla"] == table_name]))
-        self.calendared_raw = self.fine_table.drop(columns=[configuration.discount_bucket_column, *STEP_03_ADDED_COLUMNS],
+        self.calendared_raw = self.fine_table.drop(columns=[configuration.discount_bucket_column, *STEP_1_4_ADDED_COLUMNS],
                                                    errors="ignore")
         self.validated_extract = None
         self.leveled_raw = None
@@ -2303,12 +2373,12 @@ class PreparationBlock:
 
 
 def fields_the_block_reads(configuration: Config) -> list:
-    """The fields of the Config the code of the block reads (steps 00 to 06), except the ones that only say where to
+    """The fields of the Config the code of the block reads (steps 1.1 to 1.7), except the ones that only say where to
     write or what to show."""
     from dataclasses import fields as dataclass_fields
     names = [config_field.name for config_field in dataclass_fields(type(configuration))]
     readers = steps_reading_each_field(names)
-    block_labels = {"00", "01", "02", "03", "04", "05", "06", BLOCK_LABEL}
+    block_labels = {"1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", BLOCK_LABEL}
     return sorted(name for name, labels in readers.items()
                   if block_labels & set(labels) and name not in FIELDS_THAT_DO_NOT_CHANGE_THE_BLOCK)
 

@@ -12,19 +12,26 @@ It reads the results of the run (it computes nothing new) and says, in this orde
                       the extract dates them); the gain over the baseline in USD and in how many months it holds
   5. EL RUIDO         the binomial noise: how much the rate of a series alone moves by chance, how much is left after
                       the ladder and the credibility, and how close the exam error is to that limit
-  6. OJO              what the numbers do not cover
+  6. LA BANDA         what the official band of every year is made of: the rate and the price, the simulated
+                      acquisitions, the time series universe — against the share of the money each one is
+  7. LO QUE HAY QUE VALIDAR   the hypotheses of the blocks that do not hold or cannot be told on these data
+                      (verdicts.py, sff_veredicto_bloques)
+  8. OJO              what the numbers do not cover
 
-Used by step 27 (on screen at the end of the run, and at the top of informe_sff.md).
+Used by step 8.6 (on screen at the end of the run, and at the top of informe_sff.md).
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import numpy as np
+import pandas as pd
 
-from config import Config, METHOD_BASELINE, METHOD_FRAMEWORK, PIPELINE_ORIGIN_COLUMN, PIPELINE_REAL, SERIES_ID_COLUMN
+from config import (Config, METHOD_BASELINE, METHOD_FRAMEWORK, PIPELINE_ORIGIN_COLUMN, PIPELINE_REAL, SERIES_ID_COLUMN,
+                    VERDICT_FAILS, VERDICT_INCONCLUSIVE, VERDICT_WARNING)
 
 OWN_LEVEL_PREFIX = "A"                  # the risk levels of a series predicted with its own support (A, A2, A3)
 BORROWED_LEVEL_PREFIX = "B"             # merged with relatives that share every mandatory dim
 TECHNIQUES_NAMED = 3                    # the techniques named by their share of the money
+QUESTIONS_NAMED = 4                     # the hypotheses named in LO QUE HAY QUE VALIDAR
 
 
 def money(value: float) -> str:
@@ -51,7 +58,7 @@ def exam_error_of_months(results: dict, configuration: Config):
     """The typical error of the total of every future month, from the exam: the mean |error| of the monthly total at
     its horizon (h = the month − the last closed one), interpolated between the examined horizons and held beyond the
     last one; with the customer states predicted (honest exam) when the extract dates them. None without an exam.
-    It is the official band the forecast already carries (error_examen_*, step 21); it is recomputed only when the
+    It is the official band the forecast already carries (error_examen_*, step 7.2); it is recomputed only when the
     forecast was built without the exam."""
     exam = results.get("series_exam")
     if exam is None:
@@ -111,24 +118,46 @@ def business_summary(results: dict, configuration: Config) -> list:
         technique_share = technique_share.sort_values(ascending=False)
         default_share = float(technique_share.get(configuration.default_technique, 0.0))
         named = " · ".join(f"{technique} {share:.0%}" for technique, share in technique_share.head(TECHNIQUES_NAMED).items())
+        # what the exam says of the techniques chosen (the verdict of block 2), so the line does not promise a gain
+        # the exam did not see
+        technique_rows = pd.DataFrame()
+        rate_verdict = getattr(configuration, "block_verdicts", {}).get("B2")
+        if rate_verdict is not None and len(rate_verdict):
+            technique_rows = rate_verdict[rate_verdict["pregunta"].str.contains("técnica elegida mejora", regex=False)]
+        if len(technique_rows):
+            exam_says = " · ".join(f"{row['pregunta'].split('(')[-1].rstrip('?)')} {row['valor']}, {row['veredicto']}"
+                                   for _, row in technique_rows.iterrows())
+            exam_text = f"; en el examen, frente a la técnica por defecto: {exam_says}"
+        else:
+            exam_text = ""
         lines.append(f"  · técnicas: {named}. La técnica por defecto ({configuration.default_technique}, la media de los 3 "
-                     f"últimos meses) lleva el {default_share:.0%}; las demás ganaron su sitio en el backtest.")
+                     f"últimos meses) lleva el {default_share:.0%}; las demás ganaron en los meses de selección del backtest"
+                     f"{exam_text}.")
 
     # 3 · the result
     by_year = forecast["by_year"]
     future_years = by_year[by_year["esperado_usd"] > 0]
     monthly_error = exam_error_of_months(results, configuration)
     for _, year in future_years.iterrows():
-        line = (f"EL RESULTADO {int(year['ano'])} · {money(year['total_usd'])} renovados ({money(year['renovado_real_usd'])} ya "
-                f"renovados + {money(year['esperado_usd'])} esperados)")
+        time_series_part = sum(float(year.get(column_name, 0.0)) for column_name in
+                               ("ingresos_ts_real_usd", "ingresos_ts_usd", "esperado_ts_reentrada_usd"))
+        line = (f"EL RESULTADO {int(year['ano'])} · {money(year['total_usd'])} ({money(year['renovado_real_usd'])} ya "
+                f"renovados + {money(year['esperado_usd'])} esperados")
+        if time_series_part:
+            line += (f" + {money(time_series_part)} del universo time_series, retail a suscripción: "
+                     f"{money(year.get('ingresos_ts_real_usd', 0.0))} ya convertidos, {money(year.get('ingresos_ts_usd', 0.0))} "
+                     f"simulados y {money(year.get('esperado_ts_reentrada_usd', 0.0))} de renovación de su reentrada")
+        line += ")"
         if monthly_error is not None:
             of_year = monthly_error[monthly_error[period].map(lambda month: month.year) == int(year["ano"])]
             typical = of_year["error_usd"].sum()
-            line += (f"; error típico ±{money(typical)} ({typical / year['esperado_usd']:.1%} de lo esperado), del examen: el error "
-                     f"de cada mes a su horizonte, sumado (meses en la misma dirección)")
+            future_part = year["esperado_usd"] + float(year.get("ingresos_ts_usd", 0.0)) + float(year.get("esperado_ts_reentrada_usd", 0.0))
+            line += (f"; error típico ±{money(typical)} ({typical / future_part:.1%} de lo que falta), del examen: el error "
+                     f"de cada mes a su horizonte, sumado (meses en la misma dirección): tasa y precio, captación simulada"
+                     + (" y la simulación time series" if time_series_part else ""))
         lines.append(line + ".")
 
-    # 3b · the maturation of the states (stage 17): what it takes from the forecast with today's states
+    # 3b · the maturation of the states (stage 4.1): what it takes from the forecast with today's states
     maturation = forecast.get("maturation")
     if maturation is None:
         lines.append("LA MADURACIÓN · desactivada (caja identidad): el forecast es el de los estados de hoy; maduración 0.")
@@ -177,11 +206,39 @@ def business_summary(results: dict, configuration: Config) -> list:
                 f"{configuration.promise_pp:.0f} pp: {within_alone:.0%} sola → {within_after:.0%} tras las mejoras.")
         if exam is not None and len(framework) and "error_vs_ruido" in framework.columns:
             ratio = framework["error_vs_ruido"]
-            line += (f" En el examen, el error de cada serie es {ratio.min():.1f}–{ratio.max():.1f} veces su ruido inevitable "
-                     f"(1 = lo mejor posible).")
+            times = f"{ratio.min():.1f}" if round(ratio.min(), 1) == round(ratio.max(), 1) else f"{ratio.min():.1f}–{ratio.max():.1f}"
+            line += f" En el examen, el error de cada serie es {times} veces su ruido inevitable (1 = lo mejor posible)."
         lines.append(line)
 
-    # 6 · what the numbers do not cover
+    # 6 · what the band is made of, against the share of the money of each part
+    if "banda_tasa_y_precio_usd" in by_year.columns:
+        for _, year in future_years.iterrows():
+            band = float(year.get("error_examen_usd", 0.0))
+            if band <= 0:
+                continue
+            time_series_money = float(year.get("ingresos_ts_usd", 0.0)) + float(year.get("esperado_ts_reentrada_usd", 0.0))
+            to_come = float(year["esperado_usd"]) + time_series_money
+            lines.append(f"LA BANDA {int(year['ano'])} · ±{money(band)}: tasa y precio {year['banda_tasa_y_precio_usd'] / band:.0%} "
+                         f"(tasa {money(year['banda_tasa_usd'])}, precio {money(year['banda_precio_usd'])}), captación simulada "
+                         f"{year['banda_captacion_usd'] / band:.0%}, universo time series {year['banda_time_series_usd'] / band:.0%}"
+                         + (f" (es el {time_series_money / to_come:.0%} del dinero que falta)" if time_series_money and to_come else "")
+                         + ". Es el error típico (≈ 1 error medio), no un rango del 90 %.")
+
+    # 7 · the hypotheses that do not hold or cannot be told on these data
+    verdicts = [frame for frame in getattr(configuration, "block_verdicts", {}).values() if len(frame)]
+    if verdicts:
+        every = pd.concat(verdicts, ignore_index=True)
+        questions = every[every["tipo"] == "hipótesis"]
+        open_ones = questions[questions["veredicto"].isin([VERDICT_FAILS, VERDICT_INCONCLUSIVE, VERDICT_WARNING])]
+        if len(questions):
+            named = " · ".join(f"{row['bloque']} {row['pregunta'].rstrip('?').lstrip('¿')} ({row['veredicto']}: {row['valor']})"
+                               for _, row in open_ones.head(QUESTIONS_NAMED).iterrows())
+            lines.append(f"LO QUE HAY QUE VALIDAR · {len(questions) - len(open_ones)} de {len(questions)} hipótesis del framework se "
+                         f"cumplen en estos datos" + (f"; no se cumplen o no son concluyentes: {named}" if named else "")
+                         + (f" (y {len(open_ones) - QUESTIONS_NAMED} más)" if len(open_ones) > QUESTIONS_NAMED else "")
+                         + ". Todas en sff_veredicto_bloques.")
+
+    # 8 · what the numbers do not cover
     caveats = ["la estructura (escalera, credibilidad, técnica elegida) se estima con todos los meses cerrados: el examen del "
                "framework es algo optimista, sobre todo a 6 meses o más"]
     examined = max(configuration.backtest_horizons)

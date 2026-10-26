@@ -16,13 +16,13 @@ THE CURVE (per state, learned from closed cohorts, the states final)
                                                  the state when it falls due
   A unit not in the state today, h months before its due month, ends in the state with probability p(h). The expected final
   units of the state are   V + (U − V) × p(h)   (V: in the state today; the states only grow).
-  The groups are those of step 20 (the forecast series without its states), its mandatory cell and the
+  The groups are those of step 7.2 (the forecast series without its states), its mandatory cell and the
   portfolio: the first one with at least maturation_min_units units not in the state h months before.
 
 WHERE IT IS USED
-  Only inside the box of the stage 17 (step_17_customer_states.py): the final share of a dated state comes from its curve
-  (today's share + the expected migration) on the rows with dates. The forecast (step 20) and the honest exam
-  (step 19) reach it through the box, never directly.
+  Only inside the box of step 4.1 (block_4_customer_states.py): the final share of a dated state comes from its curve
+  (today's share + the expected migration) on the rows with dates. The forecast (step 7.2) and the honest exam
+  (step 7.1) reach it through the box, never directly.
 
 h, THE MONTHS BEFORE DUE THAT ARE ALREADY KNOWN
   In the forecast: h = due month − last closed month (the current month: h = 1). In the exam: h = the horizon
@@ -43,7 +43,7 @@ PORTFOLIO_KEY = "cartera"
 
 
 def group_dims(configuration: Config) -> list:
-    """The group of the curve: every dim of the forecast series but the timevarying ones (as step 20)."""
+    """The group of the curve: every dim of the forecast series but the timevarying ones (as step 7.2)."""
     return [column_name for column_name in configuration.rate_series_columns
             if column_name not in configuration.structural_timevarying_dims]
 
@@ -135,7 +135,7 @@ def closed_rows_of(fine_table: pd.DataFrame, configuration: Config, up_to=None) 
 
 def curve_history(fine_table: pd.DataFrame, configuration: Config, up_to) -> pd.DataFrame:
     """The cohorts a curve is learned from at an origin: the last maturation_history_months closed months up to it
-    (inclusive), the same window the forecast learns its curve with (step 20), so the exam examines that curve."""
+    (inclusive), the same window the forecast learns its curve with (step 7.2), so the exam examines that curve."""
     rows = closed_rows_of(fine_table, configuration, up_to=up_to)
     months = sorted(rows[configuration.period_col].unique())[-configuration.maturation_history_months:]
     return rows[rows[configuration.period_col].isin(months)]

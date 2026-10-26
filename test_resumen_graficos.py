@@ -28,8 +28,10 @@ def test_the_summary(configuration, results, console) -> None:
     check("predicciones de la tasa" in section and "frente a la baseline" in section and "pp de media" in section,
           "it says how many predictions, the gain over the baseline and the binomial noise before and after")
     report = open(os.path.join(configuration.output_folder, "informe_sff.md"), encoding="utf-8").read()
-    check("### Resumen para negocio" in report and "- LA PIPELINE" in report and report.count("\n## ") == 8,
-          "the report opens with the summary, and keeps its eight chapters")
+    check("### Resumen para negocio" in report and "- LA PIPELINE" in report and report.count("\n## ") == 9,
+          "the report opens with the summary, and keeps its nine chapters")
+    check("LA BANDA" in section and "LO QUE HAY QUE VALIDAR" in section,
+          "the summary says what the band is made of and which hypotheses do not hold on these data")
 
 
 def test_the_charts(configuration, results, console) -> None:

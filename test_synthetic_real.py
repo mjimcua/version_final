@@ -3,8 +3,8 @@ test_synthetic_real.py — The synthetic that looks like the real extract (synth
 
 A · the extract: the production columns, one row per combination, the calendar and what is booked
 B · the shape: the rates of the states and the terms, the discount unknown, the acquisitions
-C · the framework reads it with the Config of the real run (main.like_real_configuration): steps 00-03
-D · the maturation of softcancel: its columns pass steps 00-01, the leak check sees a wrong current month,
+C · the framework reads it with the Config of the real run (main.like_real_configuration): steps 1.1-1.4
+D · the maturation of softcancel: its columns pass steps 1.1-1.2, the leak check sees a wrong current month,
     and the curve learned from the closed months is the one the synthetic was built with
 """
 
@@ -76,7 +76,7 @@ def test_the_shape() -> None:
 
 
 def test_the_framework_reads_it() -> None:
-    print("C · the framework reads it with the Config of the real run (steps 00-03)")
+    print("C · the framework reads it with the Config of the real run (steps 1.1-1.4)")
     from main import like_real_configuration
     from block_1_preparation import validate_raw
     configuration = like_real_configuration("2026-10")
@@ -87,7 +87,7 @@ def test_the_framework_reads_it() -> None:
     raw = build_raw_like_real(**SMALL)
     with contextlib.redirect_stdout(io.StringIO()):
         validated = validate_raw(raw, configuration)
-    check(len(validated) == len(raw), "step 00 accepts the extract: every column has its role in the Config of the real run")
+    check(len(validated) == len(raw), "step 1.1 accepts the extract: every column has its role in the Config of the real run")
 
 
 def test_the_maturation() -> None:
@@ -128,7 +128,7 @@ def test_the_maturation() -> None:
         stopped = False
     except ValueError as error:
         stopped = "softcancel_month_0" in str(error)
-    check(stopped, "step 00 stops when a declared maturation column is missing")
+    check(stopped, "step 1.1 stops when a declared maturation column is missing")
     curve = MaturationCurve(closed_rows_of(fine_table, configuration), "softcancel", configuration).portfolio_table()
     check(np.allclose(curve["visible_del_final"].to_numpy()[:11], SOFTCANCEL_SEEN_MONTHS_BEFORE[:11], atol=0.03),
           "the curve learned from the closed months is the one the synthetic was built with (share seen k months before)")

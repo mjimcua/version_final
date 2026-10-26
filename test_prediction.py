@@ -43,8 +43,8 @@ def test_one_way_of_predicting() -> None:
     print("B · the forecast, the exam and the audit predict the same way")
     results = {}
     console = console_of(lambda: results.update(run(synthetic_with())))
-    check("12 checks: 12 ok" in step_section(console, "23") and "the framework prediction of step 19" not in console,
-          "the audit no longer recomputes the exam of step 19: the framework prediction of every series is made once")
+    check("12 checks: 12 ok" in step_section(console, "8.2") and "the framework prediction of step 7.1" not in console,
+          "the audit no longer recomputes the exam of step 7.1: the framework prediction of every series is made once")
     forecast = results["forecast"]["forecast"]
     traced = forecast.dropna(subset=["tasa_pool_h"])
     recomputed, _ = shifted_rate(traced["tasa_pool_h"], traced["z"], traced["ref_rate"], traced["group_rate"])

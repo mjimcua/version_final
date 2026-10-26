@@ -66,33 +66,35 @@ class LikeRealConfig(Config):
 
 
 def production_configuration() -> Config:
-    """The production extract, as seen in the runs of 29-sep. Names marked [por confirmar]
-    must be checked against it: step 00 names every column that is missing or has no role."""
+    """The production extract (Kamelot), with the Config of the real run of 19-oct-2026: the same columns and
+    choices as like_real_configuration, which reproduces it. Names marked [por confirmar] must be checked
+    against the extract: step 1.1 names every column that is missing or has no role, and stops."""
     return ProductionConfig(
         # where the raw is read from and the tables are written to
         sql_engine=production_engine(),
         sql_schema="dbo",
         raw_extract_sql=RAW_EXTRACT_QUERY,
         # the calendar
-        current_month="01/09/2026",
-        test_months=3,
+        current_month="01/10/2026",          # October open: uplift window 2025-10..2026-09, exam 2026-04..2026-09
+        test_months=6,                       # 6 exam months, as in the run of 19-oct: with 3, no gain can be significant
         # the dimensions
         business_mandatory_dims=["tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3",
-                                 "tr_product_level_1", "tr_product_level_2", "tr_purchase_type", "tr_renewal_type",
-                                 "tr_term", "tr_band", "tr_master_partner_code"],
-        # term and band keep their raw value; step 01 adds tr_term_level_1 / tr_band_level_1 (their values
+                                 "tr_product_level_1", "tr_product_level_2", "tr_renewal_type",
+                                 "tr_term", "tr_band", "tr_master_partner_code"],   # [por confirmar] tr_purchase_type was in the 29-sep extract, not in the 19-oct one
+        # term and band keep their raw value; step 1.2 adds tr_term_level_1 / tr_band_level_1 (their values
         # grouped by the renewal rate). The groups are kept in salida/sff_levels.json
         leveled_dims={"tr_term": "ordinal", "tr_band": "ordinal"},
         structural_timevarying_dims={"dormant": "negative", "softcancel": "negative",
                                      "not_installed": "negative"},            # [por confirmar] the signs
         # the states whose extract says WHEN they were set (<state>_month_0 … <state>_month_12, the units in the state k months
-        # before due): the extract carries softcancel's since 21-oct-2026; step 00 fails if they are missing
+        # before due): the extract carries softcancel's since 21-oct-2026; step 1.1 fails if they are missing
         maturation_dims=["softcancel"],
         extra_renovacion=["net_new", "prev_OperationGroup"],
-        extra_revalorizacion=["price_cap", "msrp_increased"],
+        # no extra_revalorizacion: the 19-oct extract carries no price_cap / msrp_increased (the increases are detected in 3.1)   [por confirmar]
         # the discount: ONE column, both sides (the bucket is derived with the default edges,
         # the same as the extract's old discount_interval)
         discount_value_column="discount",
+        sku_column="sku",                     # the SKU: formula input for the price scenarios of step 3.2
         # the other columns of the extract
         extra_measure_cols=["total_reacquired_units", "total_reacquired_usd"],   # an AUV is USD / units: computed, not read
         # the exact base of the uplift: the USD that was falling due of the contracts that RENEWED (built per
@@ -115,7 +117,7 @@ def production_configuration() -> Config:
         isolated_tr_usd_renewed_105_110_col="total_tr_usd_renewed_isolated_105_110",
         isolated_tr_usd_renewed_110_120_col="total_tr_usd_renewed_isolated_110_120",
         isolated_tr_usd_renewed_ge120_col="total_tr_usd_renewed_isolated_ge120",
-        ignore_cols=["dataset_role", "is_current_month", "dummy_field", "row_id", "_filter"],   # [por confirmar]
+        ignore_cols=["dummy_field", "_filter2", "total_tr_units_without_softcancel"],   # [por confirmar] as in the 19-oct extract
         # the simulation window (current month → December): what happens in it falls due in 2027
         term_column="tr_term",
         one_year_term_value="1 year",
@@ -228,8 +230,8 @@ def run(configuration: Config, preparation=None) -> dict:
     """Every step, in the order of their dependencies (pipeline.py: contracts, step interface, orchestrator).
 
     preparation: a block 1 already run or resumed from SQL (block_1_preparation.PreparationBlock); the run then goes
-    on from step 07. In a notebook:
-        block = PreparationBlock(configuration).run()                 # steps 00 to 06, in memory
+    on from step 2.1. In a notebook:
+        block = PreparationBlock(configuration).run()                 # steps 1.1 to 1.7, in memory
         block.persist_block()                                         # optional: to SQL
         block = PreparationBlock(configuration).resume_block_from_sql()   # another day: back from SQL
         results = run(configuration, preparation=block)"""

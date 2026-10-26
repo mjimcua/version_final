@@ -9,12 +9,12 @@ the report never becomes a second copy of the data.
 Every query reads only tables the run writes (sff_nucleo, sff_series_exam_detail) and uses plain SQL that
 SQL Server and SQLite both run (the tests run every query on SQLite and compare it with the report).
 
-  new_rows_query          step 22  the rows the framework adds or wipes, month × origin   ← sff_nucleo
-  roles_query             step 02  the calendar per role                                 ← sff_nucleo
-  calendar_query          step 02  the calendar per month                                ← sff_nucleo
-  forecast_total_query    step 21  the total per year and origin (sff_forecast_total)    ← sff_nucleo
-  exam_by_month_query     step 19  the total of every exam month per method              ← sff_series_exam_detail
-  exam_summary_query      step 19  the exam per method and horizon                       ← sff_series_exam_detail
+  new_rows_query          step 8.1  the rows the framework adds or wipes, month × origin   ← sff_nucleo
+  roles_query             step 1.3  the calendar per role                                 ← sff_nucleo
+  calendar_query          step 1.3  the calendar per month                                ← sff_nucleo
+  forecast_total_query    step 7.3  the total per year and origin (sff_forecast_total)    ← sff_nucleo
+  exam_by_month_query     step 7.1  the total of every exam month per method              ← sff_series_exam_detail
+  exam_summary_query      step 7.1  the exam per method and horizon                       ← sff_series_exam_detail
 
 The reports computed with medians or quantiles (the ladder summary, the error bands) or from the JSON of
 the generated levels have no query here: they are not a plain sum over a detail table.
@@ -31,69 +31,69 @@ def table_in_sql(configuration, table_name: str) -> str:
 
 
 def new_rows_query(configuration) -> str:
-    """Step 22: the gaps, what the calendar wiped and what the forecast created, month × origin."""
+    """Step 8.1: the gaps, what the calendar wiped and what the forecast created, month × origin."""
     core = table_in_sql(configuration, TABLE_CORE)
     period = configuration.period_col
-    return f"""-- step 22 · the rows the framework adds or wipes, month × origin
-SELECT {period} AS mes, s02_rol AS rol, 'hueco' AS origen, COUNT(*) AS filas, COUNT(DISTINCT s03_fs_id) AS series,
+    return f"""-- step 8.1 · the rows the framework adds or wipes, month × origin
+SELECT {period} AS mes, s1_3_rol AS rol, 'hueco' AS origen, COUNT(*) AS filas, COUNT(DISTINCT s1_4_fs_id) AS series,
        0 AS unidades, 0 AS usd, NULL AS esperado_usd
-FROM {core} WHERE origen_fila = 'hueco' GROUP BY {period}, s02_rol
+FROM {core} WHERE origen_fila = 'hueco' GROUP BY {period}, s1_3_rol
 UNION ALL
-SELECT {period}, s02_rol, 'resultado_adelantado_borrado', COUNT(*), COUNT(DISTINCT s03_fs_id),
-       SUM(s00_renovadas_unidades - COALESCE(s02_renovadas_unidades, 0)),
-       SUM(s00_renovado_usd - COALESCE(s02_renovado_usd, 0)), NULL
-FROM {core} WHERE origen_fila = 'raw' AND COALESCE(s00_renovadas_unidades, 0) > COALESCE(s02_renovadas_unidades, 0)
-GROUP BY {period}, s02_rol
+SELECT {period}, s1_3_rol, 'resultado_adelantado_borrado', COUNT(*), COUNT(DISTINCT s1_4_fs_id),
+       SUM(s1_1_renovadas_unidades - COALESCE(s1_3_renovadas_unidades, 0)),
+       SUM(s1_1_renovado_usd - COALESCE(s1_3_renovado_usd, 0)), NULL
+FROM {core} WHERE origen_fila = 'raw' AND COALESCE(s1_1_renovadas_unidades, 0) > COALESCE(s1_3_renovadas_unidades, 0)
+GROUP BY {period}, s1_3_rol
 UNION ALL
-SELECT {period}, s02_rol, 'pipeline_parcial_borrada', COUNT(*), COUNT(DISTINCT s03_fs_id),
-       SUM(s00_vencen_unidades - s02_vencen_unidades), SUM(s00_vencen_usd - s02_vencen_usd), NULL
-FROM {core} WHERE origen_fila = 'raw' AND s00_vencen_unidades > s02_vencen_unidades
-GROUP BY {period}, s02_rol
+SELECT {period}, s1_3_rol, 'pipeline_parcial_borrada', COUNT(*), COUNT(DISTINCT s1_4_fs_id),
+       SUM(s1_1_vencen_unidades - s1_3_vencen_unidades), SUM(s1_1_vencen_usd - s1_3_vencen_usd), NULL
+FROM {core} WHERE origen_fila = 'raw' AND s1_1_vencen_unidades > s1_3_vencen_unidades
+GROUP BY {period}, s1_3_rol
 UNION ALL
-SELECT {period}, s02_rol, origen_fila, COUNT(*), COUNT(DISTINCT s03_fs_id),
-       SUM(forecast_to_renew_units), SUM(forecast_to_renew_USD), SUM(s20_esperado_usd)
-FROM {core} WHERE origen_fila IN ('proyectada', 'simulada') GROUP BY {period}, s02_rol, origen_fila
+SELECT {period}, s1_3_rol, origen_fila, COUNT(*), COUNT(DISTINCT s1_4_fs_id),
+       SUM(forecast_to_renew_units), SUM(forecast_to_renew_USD), SUM(s7_2_esperado_usd)
+FROM {core} WHERE origen_fila IN ('proyectada', 'simulada') GROUP BY {period}, s1_3_rol, origen_fila
 UNION ALL
-SELECT {period}, s02_rol, origen_fila, COUNT(*), COUNT(DISTINCT s03_fs_id),
-       SUM(forecast_to_renew_units_at_due), SUM(forecast_to_renew_USD_at_due), SUM(s20_esperado_usd)
-FROM {core} WHERE origen_fila = 'maduracion' GROUP BY {period}, s02_rol, origen_fila
+SELECT {period}, s1_3_rol, origen_fila, COUNT(*), COUNT(DISTINCT s1_4_fs_id),
+       SUM(forecast_to_renew_units_at_due), SUM(forecast_to_renew_USD_at_due), SUM(s7_2_esperado_usd)
+FROM {core} WHERE origen_fila = 'maduracion' GROUP BY {period}, s1_3_rol, origen_fila
 ORDER BY mes, origen;"""
 
 
 def roles_query(configuration) -> str:
-    """Step 02: the calendar per role (the rows of the extract)."""
+    """Step 1.3: the calendar per role (the rows of the extract)."""
     core = table_in_sql(configuration, TABLE_CORE)
     period = configuration.period_col
-    return f"""-- step 02 · the calendar per role
-SELECT s02_rol AS rol, COUNT(DISTINCT {period}) AS meses, MIN({period}) AS desde, MAX({period}) AS hasta, COUNT(*) AS filas,
-       SUM(s02_vencen_unidades) AS unidades_vencen, SUM(s02_renovadas_unidades) AS unidades_renovadas,
-       SUM(s02_renovadas_unidades) / SUM(s02_vencen_unidades) AS tasa_unidades
+    return f"""-- step 1.3 · the calendar per role
+SELECT s1_3_rol AS rol, COUNT(DISTINCT {period}) AS meses, MIN({period}) AS desde, MAX({period}) AS hasta, COUNT(*) AS filas,
+       SUM(s1_3_vencen_unidades) AS unidades_vencen, SUM(s1_3_renovadas_unidades) AS unidades_renovadas,
+       SUM(s1_3_renovadas_unidades) / SUM(s1_3_vencen_unidades) AS tasa_unidades
 FROM {core} WHERE origen_fila = 'raw'
-GROUP BY s02_rol ORDER BY MIN({period});"""
+GROUP BY s1_3_rol ORDER BY MIN({period});"""
 
 
 def calendar_query(configuration) -> str:
-    """Step 02: the calendar per month."""
+    """Step 1.3: the calendar per month."""
     core = table_in_sql(configuration, TABLE_CORE)
     period = configuration.period_col
-    return f"""-- step 02 · the calendar per month
-SELECT {period}, MIN(s02_rol) AS rol, MAX(s02_es_mes_en_curso) AS es_mes_en_curso, COUNT(*) AS filas,
-       SUM(s02_vencen_unidades) AS unidades_vencen, SUM(s02_vencen_usd) AS usd_vence,
-       SUM(s02_renovadas_unidades) AS unidades_renovadas, SUM(s02_renovado_usd) AS usd_renovado,
-       SUM(s00_renovadas_unidades) AS s0_renovados_unidades, SUM(s00_renovado_usd) AS s0_renovados_usd,
-       SUM(s02_renovadas_unidades) / SUM(s02_vencen_unidades) AS tasa_unidades
+    return f"""-- step 1.3 · the calendar per month
+SELECT {period}, MIN(s1_3_rol) AS rol, MAX(s1_3_es_mes_en_curso) AS es_mes_en_curso, COUNT(*) AS filas,
+       SUM(s1_3_vencen_unidades) AS unidades_vencen, SUM(s1_3_vencen_usd) AS usd_vence,
+       SUM(s1_3_renovadas_unidades) AS unidades_renovadas, SUM(s1_3_renovado_usd) AS usd_renovado,
+       SUM(s1_1_renovadas_unidades) AS s0_renovados_unidades, SUM(s1_1_renovado_usd) AS s0_renovados_usd,
+       SUM(s1_3_renovadas_unidades) / SUM(s1_3_vencen_unidades) AS tasa_unidades
 FROM {core} WHERE origen_fila = 'raw'
 GROUP BY {period} ORDER BY {period};"""
 
 
 def forecast_total_query(configuration) -> str:
-    """Step 21: the total per year and origin, and the TOTAL of every year (the content of sff_forecast_total)."""
+    """Step 7.3: the total per year and origin, and the TOTAL of every year (the content of sff_forecast_total)."""
     core = table_in_sql(configuration, TABLE_CORE)
     first_year = configuration.calendar_boundaries()["current"].year
     # the rows that carry no money in the answer are left out: a gap (a month with nothing due) and an original
     # time_series row of a month not closed yet (its result is replaced by its projection)
     without_money = "origen_fila NOT IN ('hueco', 'ts_sin_resultado')"
-    return f"""-- step 21 · the total per year and origin (sff_forecast_total)
+    return f"""-- step 7.3 · the total per year and origin (sff_forecast_total)
 SELECT forecast_year AS ano, forecast_pipeline_source AS origen, SUM(forecast_to_renew_USD) AS usd_vence, SUM(forecast_renewed_USD) AS usd_renovado
 FROM {core} WHERE forecast_year >= {first_year} AND {without_money}
 GROUP BY forecast_year, forecast_pipeline_source
@@ -105,7 +105,7 @@ ORDER BY ano, origen;"""
 
 
 def exam_by_month_query(configuration, methods: list) -> str:
-    """Step 19: per exam month and horizon, the real renewals and every method's prediction and error of the total."""
+    """Step 7.1: per exam month and horizon, the real renewals and every method's prediction and error of the total."""
     detail = table_in_sql(configuration, TABLE_SERIES_EXAM_DETAIL)
     period = configuration.period_col
     reference = methods[0]
@@ -113,7 +113,7 @@ def exam_by_month_query(configuration, methods: list) -> str:
         f"SUM(CASE WHEN method = '{method}' THEN pred_units END) AS {method}_pred,\n"
         f"       SUM(CASE WHEN method = '{method}' THEN pred_units END) / SUM(CASE WHEN method = '{reference}' THEN real_units END) - 1"
         f" AS {method}_error_total" for method in methods)
-    return f"""-- step 19 · the total of every exam month and horizon, per method
+    return f"""-- step 7.1 · the total of every exam month and horizon, per method
 SELECT {period} AS mes, h, SUM(CASE WHEN method = '{reference}' THEN real_units END) AS renovadas_reales,
        {per_method}
 FROM {detail}
@@ -121,11 +121,11 @@ GROUP BY {period}, h ORDER BY {period}, h;"""
 
 
 def exam_summary_query(configuration) -> str:
-    """Step 19: per method and horizon, the mean error of the total, series-by-series WAPE, the error
+    """Step 7.1: per method and horizon, the mean error of the total, series-by-series WAPE, the error
     against the noise and the share in the interval."""
     detail = table_in_sql(configuration, TABLE_SERIES_EXAM_DETAIL)
     period = configuration.period_col
-    return f"""-- step 19 · the exam per method and horizon
+    return f"""-- step 7.1 · the exam per method and horizon
 WITH month_total AS (
     SELECT method, h, {period}, SUM(pred_units) / SUM(real_units) - 1 AS error_total
     FROM {detail} GROUP BY method, h, {period})

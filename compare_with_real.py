@@ -18,7 +18,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from step_14_uplift import renewer_rows, uplift_history
+from block_3_price import renewer_rows, uplift_history
 from config import TRUTH_ROLES
 
 # ─── the real run (19-oct-2026, current month 2026-09): indicator → (value, step where it was read) ───
@@ -51,8 +51,8 @@ REAL_RUN = {
     "dentro de la banda a corto": (0.95, "14 · 9"),
     "error del total de los pools juzgados, h = 1": (-0.013, "14 · 9"),
     "error del total de los pools juzgados, h = 6": (-0.030, "14 · 9"),
-    "error del total del framework, h = 1 (paso 19)": (0.005, "19 · 7"),
-    "error del total del framework, h = 6 (paso 19)": (0.014, "19 · 7"),
+    "error del total del framework, h = 1 (paso 7.1)": (0.005, "19 · 7"),
+    "error del total del framework, h = 6 (paso 7.1)": (0.014, "19 · 7"),
     "WAPE serie a serie framework / serie sola, h = 1": (1.10, "19 · 7  (0.10 / 0.09)"),
     "dentro del intervalo, framework h = 1": (0.95, "19 · 7"),
     "uplift toda la historia": (1.13, "15 · 10"),
@@ -64,10 +64,10 @@ REAL_RUN = {
     "sesgo vía estadística en el examen (descuento conocido)": (-0.03, "16 · 7"),
     "subidas en juego (ventana)": (43, "15 · 2"),
     "subidas detectadas en la historia": (77, "22 · 2"),
-    "nivel de adquisición Pure-New": (0.97, "20"),
-    "nivel de adquisición Not-New": (0.54, "20"),
-    "ajuste del reparto de estados del cliente, año en curso": (-0.018, "20"),
-    "ajuste del reparto de estados del cliente, año siguiente": (-0.045, "20"),
+    "nivel de adquisición Pure-New": (0.97, "7.2"),
+    "nivel de adquisición Not-New": (0.54, "7.2"),
+    "ajuste del reparto de estados del cliente, año en curso": (-0.018, "7.2"),
+    "ajuste del reparto de estados del cliente, año siguiente": (-0.045, "7.2"),
     "tasa USD esperada del primer mes futuro": (0.76, "17 · 12"),
     "renovado del año siguiente / año en curso": (0.935, "17 · by year"),
     "cuota de lo renovado del año siguiente que sale de pipeline modelada": (0.31, "17 · by year"),
@@ -136,8 +136,8 @@ def compare_results(results: dict, configuration) -> pd.DataFrame:
         synthetic[f"error del total de los pools juzgados, h = {horizon}"] = share(rows["elegida_renovadas_pred"].sum(),
                                                                                   rows["renovadas_reales"].sum()) - 1
     summary = results["series_exam"]["summary"].set_index(["metodo", "h"])
-    synthetic["error del total del framework, h = 1 (paso 19)"] = float(summary.loc[("framework", 1), "error_total_medio"])
-    synthetic["error del total del framework, h = 6 (paso 19)"] = float(summary.loc[("framework", 6), "error_total_medio"])
+    synthetic["error del total del framework, h = 1 (paso 7.1)"] = float(summary.loc[("framework", 1), "error_total_medio"])
+    synthetic["error del total del framework, h = 6 (paso 7.1)"] = float(summary.loc[("framework", 6), "error_total_medio"])
     synthetic["WAPE serie a serie framework / serie sola, h = 1"] = share(summary.loc[("framework", 1), "wape_series"],
                                                                          summary.loc[("raw", 1), "wape_series"])
     synthetic["dentro del intervalo, framework h = 1"] = float(summary.loc[("framework", 1), "en_intervalo"])
@@ -194,7 +194,7 @@ def compare_with_truth(results: dict, truth: pd.DataFrame) -> pd.DataFrame:
     of the whole forecast, the reparto of the states, the uplift and the band included. One row per month up to the
     last month whose whole pipeline is in the extract.
         error_pct              the forecast against the truth
-        error_sin_reparto_pct  the same with the states of today (without the reparto of step 20)
+        error_sin_reparto_pct  the same with the states of today (without the reparto of step 7.2)
         banda_cuadratura_pct   the half-width of the band the forecast shows (independent errors)"""
     by_month = results["forecast"]["by_month"].assign(period=lambda frame: frame["period"].astype(str)).set_index("period")
     truth = truth.set_index("period")

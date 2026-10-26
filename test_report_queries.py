@@ -41,13 +41,13 @@ def test_every_query() -> None:
 
     new_rows = pd.read_sql(new_rows_query(configuration), engine)
     check(same(new_rows, results["new_rows"], ["mes", "origen"], ["filas", "series", "unidades", "usd", "esperado_usd"]),
-          "step 22: the rows the framework adds or wipes")
+          "step 8.1: the rows the framework adds or wipes")
 
     fine = results["fine_table"]
     by_role = fine.groupby("rol").agg(filas=("rol", "size"), unidades_vencen=("total_tr_units", "sum"),
                                       unidades_renovadas=("total_renewed_units", "sum")).reset_index()
     roles = pd.read_sql(roles_query(configuration), engine)
-    check(same(roles, by_role, ["rol"], ["filas", "unidades_vencen", "unidades_renovadas"]), "step 02: the calendar per role")
+    check(same(roles, by_role, ["rol"], ["filas", "unidades_vencen", "unidades_renovadas"]), "step 1.3: the calendar per role")
 
     calendar = pd.read_sql(calendar_query(configuration), engine)
     by_month = (fine.assign(period=fine["period"].astype(str)).groupby("period")
@@ -55,21 +55,21 @@ def test_every_query() -> None:
                      s0_renovados_unidades=("s0_renovados_unidades", "sum"), s0_renovados_usd=("s0_renovados_usd", "sum"))
                 .reset_index())
     check(same(calendar, by_month, ["period"], ["filas", "unidades_vencen", "usd_vence", "s0_renovados_unidades", "s0_renovados_usd"]),
-          "step 02: the calendar per month")
+          "step 1.3: the calendar per month")
 
     total = pd.read_sql(forecast_total_query(configuration), engine)
     check(same(total, results["forecast_total"], ["ano", "origen"], ["usd_vence", "usd_renovado"]),
-          "step 21: the total per year and origin (sff_forecast_total)")
+          "step 7.3: the total per year and origin (sff_forecast_total)")
 
     exam = results["series_exam"]
     methods = sorted(exam["detail"]["method"].unique(), key=lambda method: (method != "raw", method != "framework", method))
     by_month = pd.read_sql(exam_by_month_query(configuration, methods), engine)
     value_columns = ["renovadas_reales"] + [f"{method}_{part}" for method in methods for part in ("pred", "error_total")]
-    check(same(by_month, exam["by_month"], ["mes", "h"], value_columns), "step 19: the total of every exam month per method")
+    check(same(by_month, exam["by_month"], ["mes", "h"], value_columns), "step 7.1: the total of every exam month per method")
     summary = pd.read_sql(exam_summary_query(configuration), engine)
     check(same(summary, exam["summary"], ["metodo", "h"], ["error_total_medio", "sesgo_total_medio", "wape_series",
                                                            "error_vs_ruido", "en_intervalo"]),
-          "step 19: the exam per method and horizon")
+          "step 7.1: the exam per method and horizon")
 
 
 if __name__ == "__main__":

@@ -8,11 +8,11 @@ new tariff). The detector reads that step in the uplift of the ISOLATED renewals
 process, no retention discounts in it) or, without them, in the plain uplift.
 
 Shared by three steps, so the three read the same increases:
-  step 14   the statistical uplift of the window WITHOUT the increases (its months inside a cycle are
+  step 3.1   the statistical uplift of the window WITHOUT the increases (its months inside a cycle are
             deflated), and the increases still active at the current month, with their cycle
-  step 16   the same, as of the first exam month (no peeking), to judge the uplift in the exam
-  step 25   the monitor and the calendar of the increases, for Power BI (from the core)
-Step 20 applies the factor of the increases still active to the future months inside their cycle
+  step 3.3   the same, as of the first exam month (no peeking), to judge the uplift in the exam
+  step 8.4   the monitor and the calendar of the increases, for Power BI (from the core)
+Step 7.2 applies the factor of the increases still active to the future months inside their cycle
 (increase_factor, which reads nothing from the Config).
 
 The functions:
@@ -58,7 +58,7 @@ def price_monitor(closed: pd.DataFrame, configuration: Config) -> pd.DataFrame:
     renewals (the normal renewal process, no retention event), and the detection of price increases over it.
 
     INPUT:   the closed pipeline rows with something due, with the names of the core (the core itself, filtered
-             by step 25, or step_14_uplift.closed_view_of_fine_table). The closed-month measures are read IF PRESENT, by their
+             by step 8.4, or step_14_uplift.closed_view_of_fine_table). The closed-month measures are read IF PRESENT, by their
              fixed core names (CORE_* in config.py): the exact uplift base and the isolated measures. Each metric
              needs only its own columns, so a missing one blanks only the metrics that use it. Each uplift uses
              its exact base when it is there and the approximation renewed units × the row's due price when not.

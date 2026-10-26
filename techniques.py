@@ -1,5 +1,5 @@
 """
-techniques.py — The catalogue of techniques that predict a renewal rate (used by step 14).
+techniques.py — The catalogue of techniques that predict a renewal rate (used by step 3.1).
 
 Every technique takes the monthly history of a rate (as logits: the rate lives in (0, 1),
 the logit is unbounded, so an average or a trend never predicts a rate above 100 %),

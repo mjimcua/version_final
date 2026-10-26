@@ -90,19 +90,19 @@ TABLE_SOURCES = {
     "uplift_homogeneity":       (("uplift_homogeneity",), "uplift_homogeneidad"),
     "price_monitor":            (("power_bi", "price_monitor"), "price_increase_monitor"),
     "price_calendar":           (("power_bi", "price_calendar"), "price_increase_calendar"),
-    "price_increases":          (("price_increases",), None),          # only in memory (step 14 → step 20)
+    "price_increases":          (("price_increases",), None),          # only in memory (step 3.1 → step 7.2)
     "parameters":               (("power_bi", "parameters"), "parametros"),
     "validation":               (("validation",), "validacion"),
 }
 
 # the columns of the core the explorer reads (from SQL only these are loaded, besides the dimensions of the Config:
 # the core has about a hundred columns and a million rows)
-CORE_COLUMNS = ["period", "s03_fs_id", "forecast_status", "forecast_universe", "forecast_pipeline_source", "forecast_year",
+CORE_COLUMNS = ["period", "s1_4_fs_id", "forecast_status", "forecast_universe", "forecast_pipeline_source", "forecast_year",
                 "forecast_to_renew_units", "forecast_to_renew_USD", "forecast_renewed_units", "forecast_renewed_USD",
                 "forecast_renewed_USD_low", "forecast_renewed_USD_high", "forecast_renewed_USD_maturation_adj",
                 "forecast_to_renew_units_at_due", "forecast_to_renew_USD_at_due", "forecast_maturation_units",
-                "s20_vencen_unidades", "s20_vencen_usd", "s20_vencen_unidades_al_vencer", "s20_tasa", "s20_tasa_baja",
-                "s20_tasa_alta", "s20_tecnica", "s20_confidence", "s14_uplift", "origen_fila"]
+                "s7_2_vencen_unidades", "s7_2_vencen_usd", "s7_2_vencen_unidades_al_vencer", "s7_2_tasa", "s7_2_tasa_baja",
+                "s7_2_tasa_alta", "s7_2_tecnica", "s7_2_confidence", "s3_1_uplift", "origen_fila"]
 
 # the columns that hold a month: shown as the text YYYY-MM
 PERIOD_COLUMNS = ["period", "mes", "mes_objetivo", "ultimo_mes_visto", "inicio", "fin_ciclo", "primer_mes", "ultimo_mes"]
@@ -354,14 +354,14 @@ class SFFExplorer:
 
     def series_by_money(self) -> pd.DataFrame:
         series = self.table("series")
-        return series.sort_values("s20_esperado_usd_total", ascending=False, na_position="last")
+        return series.sort_values("s7_2_esperado_usd_total", ascending=False, na_position="last")
 
     def breakdown_dimensions(self) -> list:
         """The dimensions a total can be broken down by: those of the Config that the core carries."""
         configuration, core = self.configuration, self.table("core")
         candidates = (list(configuration.business_mandatory_dims) + [f"{name}_level_1" for name in configuration.leveled_dims]
                       + list(configuration.extra_renovacion) + list(configuration.extra_revalorizacion)
-                      + list(configuration.structural_timevarying_dims) + ["forecast_pipeline_source", "s20_confidence"])
+                      + list(configuration.structural_timevarying_dims) + ["forecast_pipeline_source", "s7_2_confidence"])
         return [name for name in dict.fromkeys(candidates) if name in core.columns]
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -383,9 +383,13 @@ class SFFExplorer:
                 if row.empty:
                     continue
                 row = row.iloc[0]
-                cards.append((f"Renovado {value}", millions(row["total_usd"]),
-                              f"real {millions(row['renovado_real_usd'])} + esperado {millions(row['esperado_usd'])} · "
-                              f"± {millions(row['banda_cuadratura_usd'])} (cuadratura)"))
+                time_series_part = sum(float(row.get(column_name, 0.0)) for column_name in
+                                       ("ingresos_ts_real_usd", "ingresos_ts_usd", "esperado_ts_reentrada_usd"))
+                band = row.get("error_examen_usd", row["banda_cuadratura_usd"])
+                cards.append((f"Total {value}", millions(row["total_usd"]),
+                              f"real {millions(row['renovado_real_usd'])} + esperado {millions(row['esperado_usd'])}"
+                              + (f" + time_series {millions(time_series_part)}" if time_series_part else "")
+                              + f" · ± {millions(band)} ({'examen' if 'error_examen_usd' in row else 'cuadratura'})"))
             if len(future_years) > 1:
                 next_year = future_years[1]
                 due = self.pipeline_core()
@@ -397,11 +401,11 @@ class SFFExplorer:
             items.append(Cards(cards))
             shown = summary.copy()
             money_columns = [column for column in shown.columns if column != "ano"]
-            items.append(Table(shown, "Por año (pipeline; paso 20 · sff_resumen_negocio)",
+            items.append(Table(shown, "Por año (pipeline; paso 7.2 · sff_resumen_negocio)",
                                formats={column: millions for column in money_columns}))
         total = self.table("forecast_total")
         if not total.empty:
-            items.append(Table(total, "Por año y origen, con el universo time_series (paso 21 · sff_forecast_total)",
+            items.append(Table(total, "Por año y origen, con el universo time_series (paso 7.3 · sff_forecast_total)",
                                formats={"usd_vence": millions, "usd_renovado": millions,
                                         "unidades_vencen": lambda value: f"{value:,.0f}".replace(",", "."),
                                         "unidades_renovadas": lambda value: f"{value:,.0f}".replace(",", ".")}))
@@ -527,30 +531,30 @@ class SFFExplorer:
         """The forecast series, by money, filtered by confidence, risk level and a piece of their id."""
         series = self.series_by_money()
         if confidence:
-            series = series[series["s20_confidence"].isin(confidence)]
+            series = series[series["s7_2_confidence"].isin(confidence)]
         if risk_levels:
-            series = series[series["s09_nivel_riesgo"].isin(risk_levels)]
+            series = series[series["s2_3_nivel_riesgo"].isin(risk_levels)]
         if text:
-            series = series[series["s03_fs_id"].astype(str).str.contains(text, case=False, regex=False)]
-        total = self.table("series")["s20_esperado_usd_total"].sum()
+            series = series[series["s1_4_fs_id"].astype(str).str.contains(text, case=False, regex=False)]
+        total = self.table("series")["s7_2_esperado_usd_total"].sum()
         shown = pd.DataFrame({
-            "forecast_serie": series["s03_fs_id"], "esperado_usd": series["s20_esperado_usd_total"],
-            "peso": series["s20_esperado_usd_total"] / total if total else np.nan,
-            "confianza": series["s20_confidence"].map(CONFIDENCE_LABELS), "vencen_al_mes": series["s06_n_propio"],
-            "nivel_riesgo": series["s09_nivel_riesgo"], "soporte_composicion": series["s08_stage3_support"],
-            "tecnica": series["s12_tecnica_corto"].map(lambda value: TECHNIQUE_LABELS.get(value, value)),
-            "error_examen_pp": series["s19_exam_mae_pp"], "dentro_intervalo": series["s19_exam_coverage"],
-            "error_sobre_ruido": series["s19_exam_error_over_noise"], "mejora_sobre_raw_pp": series["s19_improvement_mae_pp"]})
+            "forecast_serie": series["s1_4_fs_id"], "esperado_usd": series["s7_2_esperado_usd_total"],
+            "peso": series["s7_2_esperado_usd_total"] / total if total else np.nan,
+            "confianza": series["s7_2_confidence"].map(CONFIDENCE_LABELS), "vencen_al_mes": series["s1_7_n_propio"],
+            "nivel_riesgo": series["s2_3_nivel_riesgo"], "soporte_composicion": series["s2_2_stage3_support"],
+            "tecnica": series["s2_6_tecnica_corto"].map(lambda value: TECHNIQUE_LABELS.get(value, value)),
+            "error_examen_pp": series["s7_1_exam_mae_pp"], "dentro_intervalo": series["s7_1_exam_coverage"],
+            "error_sobre_ruido": series["s7_1_exam_error_over_noise"], "mejora_sobre_raw_pp": series["s7_1_improvement_mae_pp"]})
         return shown.reset_index(drop=True)
 
     def page_series(self, confidence: list = None, risk_levels: list = None, text: str = "") -> list:
         series = self.table("series")
         shown = self.series_table(confidence, risk_levels, text)
-        total = series["s20_esperado_usd_total"].sum()
-        money_by_confidence = {level: float((series["s20_esperado_usd_total"] * series[f"s20_pct_usd_{level}"]).sum())
+        total = series["s7_2_esperado_usd_total"].sum()
+        money_by_confidence = {level: float((series["s7_2_esperado_usd_total"] * series[f"s7_2_pct_usd_{level}"]).sum())
                                for level in ("high", "medium", "low")}
-        coverage = series["s19_exam_in_band"].sum() / max(series["s19_exam_predictions"].sum(), 1)
-        raw_coverage = series["s19_raw_in_band"].sum() / max(series["s19_raw_predictions"].sum(), 1)
+        coverage = series["s7_1_exam_in_band"].sum() / max(series["s7_1_exam_predictions"].sum(), 1)
+        raw_coverage = series["s7_1_raw_in_band"].sum() / max(series["s7_1_raw_predictions"].sum(), 1)
         items = [Title("Las forecast series", "Cada número del forecast es de una forecast serie. Ordenadas por lo que "
                        "se espera renovar; filtra por confianza, nivel de riesgo o por un trozo de su id.", level=2),
                  Cards([("Forecast series", f"{len(series):,}".replace(",", "."), f"{len(shown):,} con el filtro".replace(",", ".")),
@@ -565,27 +569,27 @@ class SFFExplorer:
                                        "mejora_sobre_raw_pp": points, "vencen_al_mes": lambda value: f"{value:,.0f}".replace(",", "."),
                                        "soporte_composicion": lambda value: f"{value:,.0f}".replace(",", ".")})]
         # where the money is and how well it was predicted
-        plotted = series[series["s20_esperado_usd_total"] > 0].copy()
+        plotted = series[series["s7_2_esperado_usd_total"] > 0].copy()
         if text or confidence or risk_levels:
-            plotted = plotted[plotted["s03_fs_id"].isin(shown["forecast_serie"])]
+            plotted = plotted[plotted["s1_4_fs_id"].isin(shown["forecast_serie"])]
         figure = go.Figure()
         for level in ("high", "medium", "low"):
-            part = plotted[plotted["s20_confidence"] == level]
-            figure.add_scatter(x=part["s20_esperado_usd_total"], y=part["s19_exam_mae_pp"], mode="markers",
-                               name=CONFIDENCE_LABELS[level], text=part["s03_fs_id"],
+            part = plotted[plotted["s7_2_confidence"] == level]
+            figure.add_scatter(x=part["s7_2_esperado_usd_total"], y=part["s7_1_exam_mae_pp"], mode="markers",
+                               name=CONFIDENCE_LABELS[level], text=part["s1_4_fs_id"],
                                marker=dict(color=CONFIDENCE_COLOURS[level], size=8, line=dict(color="white", width=1)),
                                hovertemplate="%{text}<br>esperado $%{x:,.0f}<br>error examen %{y:.1f} pp<extra></extra>")
         figure.update_xaxes(type="log", title_text="Esperado USD (escala log)")
         figure.update_layout(hovermode="closest")
         items.append(layout(figure, "Dónde está el dinero y cuánto se equivocó en el examen", 420, "Error medio del examen (pp)"))
-        by_level = (series.groupby("s09_nivel_riesgo")
-                    .agg(series=("s03_fs_id", "size"), esperado_usd=("s20_esperado_usd_total", "sum"),
-                         en_intervalo=("s19_exam_in_band", "sum"), predicciones=("s19_exam_predictions", "sum"),
-                         error_abs=("s19_exam_abs_err_units", "sum"), reales=("s19_exam_real_units", "sum")).reset_index())
+        by_level = (series.groupby("s2_3_nivel_riesgo")
+                    .agg(series=("s1_4_fs_id", "size"), esperado_usd=("s7_2_esperado_usd_total", "sum"),
+                         en_intervalo=("s7_1_exam_in_band", "sum"), predicciones=("s7_1_exam_predictions", "sum"),
+                         error_abs=("s7_1_exam_abs_err_units", "sum"), reales=("s7_1_exam_real_units", "sum")).reset_index())
         by_level["dentro_intervalo"] = by_level["en_intervalo"] / by_level["predicciones"].where(by_level["predicciones"] > 0)
         by_level["wape_examen"] = by_level["error_abs"] / by_level["reales"].where(by_level["reales"] > 0)
         by_level["peso"] = by_level["esperado_usd"] / total if total else np.nan
-        items.append(Table(by_level[["s09_nivel_riesgo", "series", "esperado_usd", "peso", "dentro_intervalo", "wape_examen"]],
+        items.append(Table(by_level[["s2_3_nivel_riesgo", "series", "esperado_usd", "peso", "dentro_intervalo", "wape_examen"]],
                            "Por nivel de riesgo: cómo predice cada serie (A propio · A3 reforzado · B prestado · C credibilidad · D sin historia)",
                            formats={"esperado_usd": money, "peso": percent, "dentro_intervalo": percent, "wape_examen": percent}))
         return items
@@ -596,30 +600,30 @@ class SFFExplorer:
     def page_card(self, fs_id: str = None, exam_horizon: int = 1) -> list:
         series = self.table("series")
         if fs_id is None:
-            fs_id = self.series_by_money()["s03_fs_id"].iloc[0]
-        found = series[series["s03_fs_id"] == fs_id]
+            fs_id = self.series_by_money()["s1_4_fs_id"].iloc[0]
+        found = series[series["s1_4_fs_id"] == fs_id]
         if found.empty:
             return [Note(f"La forecast serie «{html.escape(str(fs_id))}» no está en la dimensión.", "warning")]
         row = found.iloc[0]
-        composition_id = row["s08_stage3_id"]
-        total = series["s20_esperado_usd_total"].sum()
+        composition_id = row["s2_2_stage3_id"]
+        total = series["s7_2_esperado_usd_total"].sum()
         core = self.pipeline_core()
-        rows = core[core["s03_fs_id"] == fs_id]
+        rows = core[core["s1_4_fs_id"] == fs_id]
         future = rows[rows["forecast_status"] == "forecast"]
         items = [Title(f"Forecast serie {fs_id}", f"Composición con la que predice: {composition_id}", level=2)]
         items.append(Cards([
-            ("Esperado", money(row["s20_esperado_usd_total"]),
+            ("Esperado", money(row["s7_2_esperado_usd_total"]),
              f"{money(future['forecast_renewed_USD_low'].sum())} – {money(future['forecast_renewed_USD_high'].sum())}"),
-            ("Peso en la cartera", percent(row["s20_esperado_usd_total"] / total if total else np.nan, 2), "del esperado de las series"),
-            ("Vencen al mes", integer(row["s06_n_propio"]), f"tasa histórica {percent(row['s06_tasa_propia'])}"),
-            ("Cómo predice", str(row["s09_nivel_riesgo"]), f"composición de {integer(row['s08_stage3_support'])} · error ±{points(row['s09_se_prediccion_pp'])}"),
-            ("Error en el examen", points(row["s19_exam_mae_pp"]),
-             f"ruido {points(row['s19_exam_noise_pp'])} · error/ruido {row['s19_exam_error_over_noise']:.2f}".replace(".", ",")
-             if pd.notna(row["s19_exam_error_over_noise"]) else "sin examen"),
-            ("Dentro del intervalo", f"{row['s19_exam_in_band']:.0f} / {row['s19_exam_predictions']:.0f}" if pd.notna(row["s19_exam_predictions"]) else "—",
-             f"serie sola: {row['s19_raw_in_band']:.0f} / {row['s19_raw_predictions']:.0f}" if pd.notna(row["s19_raw_predictions"]) else ""),
-            ("Confianza", CONFIDENCE_LABELS.get(row["s20_confidence"], row["s20_confidence"]),
-             f"alta {percent(row['s20_pct_usd_high'], 0)} · media {percent(row['s20_pct_usd_medium'], 0)} · baja {percent(row['s20_pct_usd_low'], 0)}")]))
+            ("Peso en la cartera", percent(row["s7_2_esperado_usd_total"] / total if total else np.nan, 2), "del esperado de las series"),
+            ("Vencen al mes", integer(row["s1_7_n_propio"]), f"tasa histórica {percent(row['s1_7_tasa_propia'])}"),
+            ("Cómo predice", str(row["s2_3_nivel_riesgo"]), f"composición de {integer(row['s2_2_stage3_support'])} · error ±{points(row['s2_3_se_prediccion_pp'])}"),
+            ("Error en el examen", points(row["s7_1_exam_mae_pp"]),
+             f"ruido {points(row['s7_1_exam_noise_pp'])} · error/ruido {row['s7_1_exam_error_over_noise']:.2f}".replace(".", ",")
+             if pd.notna(row["s7_1_exam_error_over_noise"]) else "sin examen"),
+            ("Dentro del intervalo", f"{row['s7_1_exam_in_band']:.0f} / {row['s7_1_exam_predictions']:.0f}" if pd.notna(row["s7_1_exam_predictions"]) else "—",
+             f"serie sola: {row['s7_1_raw_in_band']:.0f} / {row['s7_1_raw_predictions']:.0f}" if pd.notna(row["s7_1_raw_predictions"]) else ""),
+            ("Confianza", CONFIDENCE_LABELS.get(row["s7_2_confidence"], row["s7_2_confidence"]),
+             f"alta {percent(row['s7_2_pct_usd_high'], 0)} · media {percent(row['s7_2_pct_usd_medium'], 0)} · baja {percent(row['s7_2_pct_usd_low'], 0)}")]))
         items.append(Note(self.card_story(row, rows, future)))
         items.append(self.figure_card_history(fs_id, rows))
         items.append(self.figure_card_exam(fs_id, exam_horizon))
@@ -628,18 +632,18 @@ class SFFExplorer:
         items.extend(self.card_ladder(fs_id, composition_id))
         items.append(Title("Las filas futuras", "Una fila por registro del núcleo: origen, técnica, unidades hoy y al vencer (la "
                                                 "maduración de los estados del cliente), tasa y su banda, uplift, esperado y ajuste por estados."))
-        detail = future[["period", "origen_fila", "forecast_pipeline_source", "s20_tecnica", "s20_vencen_unidades",
-                         "s20_vencen_unidades_al_vencer", "forecast_to_renew_USD",
-                         "s20_tasa", "s20_tasa_baja", "s20_tasa_alta", "s14_uplift", "forecast_renewed_USD",
+        detail = future[["period", "origen_fila", "forecast_pipeline_source", "s7_2_tecnica", "s7_2_vencen_unidades",
+                         "s7_2_vencen_unidades_al_vencer", "forecast_to_renew_USD",
+                         "s7_2_tasa", "s7_2_tasa_baja", "s7_2_tasa_alta", "s3_1_uplift", "forecast_renewed_USD",
                          "forecast_renewed_USD_low", "forecast_renewed_USD_high", "forecast_renewed_USD_maturation_adj",
-                         "s20_confidence"]].sort_values("period")
+                         "s7_2_confidence"]].sort_values("period")
         items.append(Table(detail, rows=60, formats={"forecast_to_renew_USD": money, "forecast_renewed_USD": money,
                                                      "forecast_renewed_USD_low": money, "forecast_renewed_USD_high": money,
-                                                     "forecast_renewed_USD_maturation_adj": money, "s20_tasa": percent,
-                                                     "s20_tasa_baja": percent, "s20_tasa_alta": percent,
-                                                     "s14_uplift": lambda value: f"{value:.3f}".replace(".", ","),
-                                                     "s20_vencen_unidades": lambda value: f"{value:,.1f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                                                     "s20_vencen_unidades_al_vencer": lambda value: f"{value:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")}))
+                                                     "forecast_renewed_USD_maturation_adj": money, "s7_2_tasa": percent,
+                                                     "s7_2_tasa_baja": percent, "s7_2_tasa_alta": percent,
+                                                     "s3_1_uplift": lambda value: f"{value:.3f}".replace(".", ","),
+                                                     "s7_2_vencen_unidades": lambda value: f"{value:,.1f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                                                     "s7_2_vencen_unidades_al_vencer": lambda value: f"{value:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")}))
         return items
 
     def card_story(self, row, rows: pd.DataFrame, future: pd.DataFrame) -> str:
@@ -647,24 +651,24 @@ class SFFExplorer:
         history = rows[rows["forecast_status"] == "actual"]
         due = history["forecast_to_renew_units"].sum()
         rate = history["forecast_renewed_units"].sum() / due if due else np.nan
-        technique = TECHNIQUE_LABELS.get(row["s12_tecnica_corto"], row["s12_tecnica_corto"])
-        lines = [f"<b>1 · Qué es.</b> Se esperan {money(row['s20_esperado_usd_total'])}; le vencen "
-                 f"{integer(row['s06_n_propio'])} licencias al mes.",
+        technique = TECHNIQUE_LABELS.get(row["s2_6_tecnica_corto"], row["s2_6_tecnica_corto"])
+        lines = [f"<b>1 · Qué es.</b> Se esperan {money(row['s7_2_esperado_usd_total'])}; le vencen "
+                 f"{integer(row['s1_7_n_propio'])} licencias al mes.",
                  f"<b>2 · Cómo se ha comportado.</b> Renueva el {percent(rate)} de las unidades"
-                 + (f"; su variación es {row['s11_series_phi']:.1f} veces la del azar (φ) y su patrón anual de "
-                    f"{points(row['s11_series_amplitude_pp'])}".replace(".", ",") if pd.notna(row.get("s11_series_phi")) else "") + ".",
-                 f"<b>3 · Con qué datos predice.</b> Nivel {row['s09_nivel_riesgo']}: "
-                 + ("predice con su propia historia." if str(row["s09_nivel_riesgo"]).startswith("A")
-                    else f"se apoya en su composición ({integer(row['s08_stage3_support'])} licencias al mes)."),
-                 f"<b>4 · Con qué técnica.</b> {technique}: error de {points(row['s12_examen_err_pp_corto'])} a un mes en el examen, "
-                 f"frente a {points(row['s12_examen_por_defecto_err_pp_corto'])} de la media de 3 meses.",
-                 f"<b>5 · Cuánto acertó.</b> {row['s19_exam_in_band']:.0f} de {row['s19_exam_predictions']:.0f} predicciones dentro del "
-                 f"intervalo; error medio {points(row['s19_exam_mae_pp'])} frente a un ruido de {points(row['s19_exam_noise_pp'])}."
-                 if pd.notna(row["s19_exam_predictions"]) else "<b>5 · Cuánto acertó.</b> No tiene meses de examen.",
+                 + (f"; su variación es {row['s2_5_series_phi']:.1f} veces la del azar (φ) y su patrón anual de "
+                    f"{points(row['s2_5_series_amplitude_pp'])}".replace(".", ",") if pd.notna(row.get("s2_5_series_phi")) else "") + ".",
+                 f"<b>3 · Con qué datos predice.</b> Nivel {row['s2_3_nivel_riesgo']}: "
+                 + ("predice con su propia historia." if str(row["s2_3_nivel_riesgo"]).startswith("A")
+                    else f"se apoya en su composición ({integer(row['s2_2_stage3_support'])} licencias al mes)."),
+                 f"<b>4 · Con qué técnica.</b> {technique}: error de {points(row['s2_6_examen_err_pp_corto'])} a un mes en el examen, "
+                 f"frente a {points(row['s2_6_examen_por_defecto_err_pp_corto'])} de la media de 3 meses.",
+                 f"<b>5 · Cuánto acertó.</b> {row['s7_1_exam_in_band']:.0f} de {row['s7_1_exam_predictions']:.0f} predicciones dentro del "
+                 f"intervalo; error medio {points(row['s7_1_exam_mae_pp'])} frente a un ruido de {points(row['s7_1_exam_noise_pp'])}."
+                 if pd.notna(row["s7_1_exam_predictions"]) else "<b>5 · Cuánto acertó.</b> No tiene meses de examen.",
                  f"<b>6 · Qué predice.</b> {money(future['forecast_renewed_USD'].sum())} de {money(future['forecast_to_renew_USD_at_due'].sum())} "
                  f"que le vencerán (hoy {money(future['forecast_to_renew_USD'].sum())}: la diferencia es la maduración de los estados del cliente), entre {money(future['forecast_renewed_USD_low'].sum())} y {money(future['forecast_renewed_USD_high'].sum())}.",
-                 f"<b>7 · Confianza.</b> {CONFIDENCE_LABELS.get(row['s20_confidence'], row['s20_confidence'])} "
-                 f"(alta en el {percent(row['s20_pct_usd_high'], 0)} de su dinero)."]
+                 f"<b>7 · Confianza.</b> {CONFIDENCE_LABELS.get(row['s7_2_confidence'], row['s7_2_confidence'])} "
+                 f"(alta en el {percent(row['s7_2_pct_usd_high'], 0)} de su dinero)."]
         return "<br>".join(lines)
 
     def figure_card_history(self, fs_id: str, rows: pd.DataFrame) -> go.Figure:
@@ -676,14 +680,14 @@ class SFFExplorer:
                            name="Real", line=dict(color=INK, width=2))
         future = rows[rows["forecast_status"] == "forecast"].copy()
         if not future.empty:
-            future["_baja"] = future["s20_vencen_unidades_al_vencer"] * future["s20_tasa_baja"]
-            future["_alta"] = future["s20_vencen_unidades_al_vencer"] * future["s20_tasa_alta"]
-            monthly = future.groupby(["period", "forecast_pipeline_source"])[["s20_vencen_unidades_al_vencer", "forecast_renewed_units",
+            future["_baja"] = future["s7_2_vencen_unidades_al_vencer"] * future["s7_2_tasa_baja"]
+            future["_alta"] = future["s7_2_vencen_unidades_al_vencer"] * future["s7_2_tasa_alta"]
+            monthly = future.groupby(["period", "forecast_pipeline_source"])[["s7_2_vencen_unidades_al_vencer", "forecast_renewed_units",
                                                                               "_baja", "_alta"]].sum().reset_index()
             labels = self.source_labels()
             for index, (source, part) in enumerate(monthly.groupby("forecast_pipeline_source")):
                 part = part.sort_values("period")
-                units = part["s20_vencen_unidades_al_vencer"].where(part["s20_vencen_unidades_al_vencer"] > 0)
+                units = part["s7_2_vencen_unidades_al_vencer"].where(part["s7_2_vencen_unidades_al_vencer"] > 0)
                 figure.add_scatter(x=part["period"], y=part["_alta"] / units, mode="lines", line=dict(width=0),
                                    showlegend=False, hoverinfo="skip")
                 figure.add_scatter(x=part["period"], y=part["_baja"] / units, mode="lines", line=dict(width=0),
@@ -780,10 +784,10 @@ class SFFExplorer:
         members = self.table("composition_members")
         members = members[members["composition_id"] == composition_id]
         if len(members) > 1:
-            series = self.table("series").set_index("s03_fs_id")
-            members = members.assign(vencen_al_mes=members["fs_id"].map(series["s06_n_propio"]),
-                                     tasa_propia=members["fs_id"].map(series["s06_tasa_propia"]),
-                                     esperado_usd=members["fs_id"].map(series["s20_esperado_usd_total"]))
+            series = self.table("series").set_index("s1_4_fs_id")
+            members = members.assign(vencen_al_mes=members["fs_id"].map(series["s1_7_n_propio"]),
+                                     tasa_propia=members["fs_id"].map(series["s1_7_tasa_propia"]),
+                                     esperado_usd=members["fs_id"].map(series["s7_2_esperado_usd_total"]))
             items.append(Table(members.sort_values("vencen_al_mes", ascending=False),
                                "Su composición: uses = predice con ella · lends = solo presta su historia",
                                formats={"tasa_propia": percent, "esperado_usd": money}))
@@ -802,7 +806,7 @@ class SFFExplorer:
         figure.add_scatter(x=pool["period"], y=pool["tasa"], name=f"Composición {composition_id}", line=dict(color=SERIES_COLOURS[0], width=2))
         if fs_id:
             rows = self.pipeline_core()
-            rows = rows[(rows["s03_fs_id"] == fs_id) & (rows["forecast_status"] == "actual")]
+            rows = rows[(rows["s1_4_fs_id"] == fs_id) & (rows["forecast_status"] == "actual")]
             monthly = rows.groupby("period")[["forecast_to_renew_units", "forecast_renewed_units"]].sum()
             monthly = monthly[monthly["forecast_to_renew_units"] > 0]
             figure.add_scatter(x=monthly.index, y=monthly["forecast_renewed_units"] / monthly["forecast_to_renew_units"],
@@ -827,13 +831,13 @@ class SFFExplorer:
             items.append(layout(figure, "Paso a paso: el dinero que ya tiene soporte suficiente", 340, "% del USD", ".0%"))
             items.append(Table(summary, "Paso a paso (sff_ladder_summary)", formats={"pct_usd_floor": percent, "pct_usd_own_rate": percent}))
         series = self.table("series")
-        stage_columns = [f"s08_stage{stage}_support" for stage in range(4) if f"s08_stage{stage}_support" in series.columns]
+        stage_columns = [f"s2_2_stage{stage}_support" for stage in range(4) if f"s2_2_stage{stage}_support" in series.columns]
         if stage_columns:
-            weights = series["s05_usd_por_predecir"].fillna(0.0)
+            weights = series["s1_6_usd_por_predecir"].fillna(0.0)
             rows = []
             for column_name in stage_columns:
                 support = series[column_name]
-                rows.append({"etapa": column_name.replace("s08_", "").replace("_support", ""),
+                rows.append({"etapa": column_name.replace("s2_2_", "").replace("_support", ""),
                              "series_bajo_30": int((support < 30).sum()), "series_bajo_271": int((support < 271).sum()),
                              "usd_bajo_30": float(weights[support < 30].sum() / weights.sum()) if weights.sum() else np.nan,
                              "usd_desde_271": float(weights[support >= 271].sum() / weights.sum()) if weights.sum() else np.nan,
@@ -866,7 +870,7 @@ class SFFExplorer:
                                         "error_alone_pp": points, "error_merged_pp": points}))
         decision = self.table("dimension_decision")
         if not decision.empty:
-            items.append(Table(decision, "Cuánto separa cada dimensión la tasa y el orden de colapso (paso 07)"))
+            items.append(Table(decision, "Cuánto separa cada dimensión la tasa y el orden de colapso (paso 2.1)"))
         items.extend(self.composition_detail(composition_id))
         return items
 
@@ -1015,8 +1019,8 @@ class SFFExplorer:
             items.append(layout(figure, "Error / ruido por forecast serie (cortado en 5): a la izquierda de 1, el error es el del azar",
                                 340, "Forecast series"))
             figure = go.Figure()
-            series = self.table("series").set_index("s03_fs_id")
-            weights = per_series["fs_id"].map(series["s20_esperado_usd_total"]).fillna(0.0)
+            series = self.table("series").set_index("s1_4_fs_id")
+            weights = per_series["fs_id"].map(series["s7_2_esperado_usd_total"]).fillna(0.0)
             figure.add_scatter(x=per_series["raw_mae_pp"], y=per_series["framework_mae_pp"], mode="markers", text=per_series["fs_id"],
                                marker=dict(size=np.clip(np.sqrt(weights / max(weights.max(), 1.0)) * 30, 4, 30), color=SERIES_COLOURS[0], opacity=0.6),
                                hovertemplate="%{text}<br>sola %{x:.1f} pp · framework %{y:.1f} pp<extra></extra>", name="series")
@@ -1026,9 +1030,9 @@ class SFFExplorer:
             items.append(layout(figure, "Cada serie: su error sola frente al del framework (tamaño = dinero; debajo de la diagonal mejora)",
                                 420, "Error del framework (pp)"))
         series = self.table("series")
-        by_confidence = (series.groupby("s20_confidence").agg(series=("s03_fs_id", "size"), predicciones=("s19_exam_predictions", "sum"),
-                                                             en_intervalo=("s19_exam_in_band", "sum"), error_abs=("s19_exam_abs_err_units", "sum"),
-                                                             reales=("s19_exam_real_units", "sum")).reset_index())
+        by_confidence = (series.groupby("s7_2_confidence").agg(series=("s1_4_fs_id", "size"), predicciones=("s7_1_exam_predictions", "sum"),
+                                                             en_intervalo=("s7_1_exam_in_band", "sum"), error_abs=("s7_1_exam_abs_err_units", "sum"),
+                                                             reales=("s7_1_exam_real_units", "sum")).reset_index())
         by_confidence["dentro_intervalo"] = by_confidence["en_intervalo"] / by_confidence["predicciones"].where(by_confidence["predicciones"] > 0)
         by_confidence["wape"] = by_confidence["error_abs"] / by_confidence["reales"].where(by_confidence["reales"] > 0)
         items.append(Table(by_confidence, "¿La confianza dice la verdad? Acierto del examen por etiqueta de confianza",
@@ -1058,7 +1062,7 @@ class SFFExplorer:
             figure.add_histogram(x=cells["uplift"], nbinsx=50, marker_color=SERIES_COLOURS[0], name="celdas")
             figure.update_layout(hovermode="closest")
             items.append(layout(figure, "El uplift de las celdas", 300, "Celdas"))
-        for name, caption in (("uplift_backtest", "El examen del uplift: cada vía en los mismos renovadores (paso 16)"),
+        for name, caption in (("uplift_backtest", "El examen del uplift: cada vía en los mismos renovadores (paso 3.3)"),
                               ("contract_check", "La regla de contrato frente a lo observado, por tramo de descuento"),
                               ("uplift_homogeneity", "Homogeneidad: lo que valían los renovadores frente a la media de su celda")):
             frame = self.table(name)
@@ -1067,9 +1071,9 @@ class SFFExplorer:
         increases = self.table("price_increases")
         calendar = self.table("price_calendar")
         if not increases.empty:
-            items.append(Table(increases, "Subidas en juego hoy: mes del ciclo, meses futuros que aún la llevan (paso 14)"))
+            items.append(Table(increases, "Subidas en juego hoy: mes del ciclo, meses futuros que aún la llevan (paso 3.1)"))
         if not calendar.empty:
-            items.append(Table(calendar, "Calendario de subidas detectadas (paso 25)"))
+            items.append(Table(calendar, "Calendario de subidas detectadas (paso 8.4)"))
         elif not increases.empty or self.has("price_monitor"):
             items.append(Note("No se ha detectado ninguna subida de precio confirmada.", "info"))
         groups = self.price_groups()
@@ -1131,7 +1135,7 @@ class SFFExplorer:
                        "en esta ejecución y los pasos que lo leen. La leyenda describe cada columna del núcleo.", level=2)]
         validation = self.table("validation")
         if not validation.empty:
-            items.append(Table(validation, "La validación final (paso 26)"))
+            items.append(Table(validation, "La validación final (paso 8.5)"))
         parameters = self.table("parameters")
         if not parameters.empty:
             shown = parameters[parameters["cambiado"] == 1] if only_changed else parameters
@@ -1205,14 +1209,14 @@ class SFFExplorer:
         series = self.table("series")
         confidence = widgets.SelectMultiple(options=[(CONFIDENCE_LABELS.get(value, value), value) for value in ["high", "medium", "low"]],
                                             description="Confianza", rows=3)
-        risk = widgets.SelectMultiple(options=sorted(series["s09_nivel_riesgo"].dropna().unique()), description="Riesgo", rows=4)
+        risk = widgets.SelectMultiple(options=sorted(series["s2_3_nivel_riesgo"].dropna().unique()), description="Riesgo", rows=4)
         search = widgets.Text(description="Buscar", placeholder="trozo del fs_id (p. ej. EU|A)")
         tabs.append(page_with_controls("series", [confidence, risk, search],
                                        lambda: {"confidence": list(confidence.value), "risk_levels": list(risk.value), "text": search.value}))
 
         # 3 · the card: the series (by money; any other can be typed) and the horizon of the exam
         ordered = self.series_by_money()
-        options = [str(value) for value in ordered["s03_fs_id"].head(SERIES_OPTIONS_SHOWN)]
+        options = [str(value) for value in ordered["s1_4_fs_id"].head(SERIES_OPTIONS_SHOWN)]
         fs_box = widgets.Combobox(options=options, value=options[0] if options else "", description="Serie", ensure_option=False,
                                   placeholder="escribe o elige un fs_id", layout=widgets.Layout(width="520px"))
         horizons = list(getattr(self.configuration, "backtest_horizons", [1, 6]))
@@ -1270,7 +1274,7 @@ class SFFExplorer:
         parameters. offline=True embeds plotly once (about 4 MB, opens without internet); False loads it from its CDN."""
         sections, plotly_written = [], False
         pages = [("negocio", {}), ("series", {})]
-        pages += [("ficha", {"fs_id": fs_id}) for fs_id in self.series_by_money()["s03_fs_id"].head(top_series)]
+        pages += [("ficha", {"fs_id": fs_id}) for fs_id in self.series_by_money()["s1_4_fs_id"].head(top_series)]
         pages += [("escalera", {}), ("backtest", {}), ("examen", {}), ("uplift", {}), ("estados", {}), ("parametros", {})]
         titles = dict(PAGES)
         for key, arguments in pages:

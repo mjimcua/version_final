@@ -1,5 +1,5 @@
 """
-test_block_1.py — Block 1 (preparation, steps 00 to 06) in one module: run, persisted to SQL, resumed from SQL,
+test_block_1.py — Block 1 (preparation, steps 1.1 to 1.7) in one module: run, persisted to SQL, resumed from SQL,
 and the rest of the pipeline from a resumed block gives the same forecast as a whole run.
 
     python test_block_1.py
@@ -44,16 +44,16 @@ def test_persist_and_resume() -> None:
     configuration = synthetic_with()
     block = PreparationBlock(configuration)
     console = console_of(block.run)
-    check("STEP 00 · VALIDATE RAW" in console and "STEP 06 · RATE SERIES" in console and block.origin == "run",
+    check("STEP 1.1 · VALIDATE RAW" in console and "STEP 1.7 · RATE SERIES" in console and block.origin == "run",
           "run() runs the seven steps in order and keeps every result in memory")
     console_of(block.persist_block)
     resumed = PreparationBlock(synthetic_with(sql_engine=configuration.sql_engine))
     console = console_of(resumed.resume_block_from_sql)
-    check(resumed.origin == "sql" and "STEP 00" not in console, "resume_block_from_sql() runs no step")
+    check(resumed.origin == "sql" and "STEP 1.1" not in console, "resume_block_from_sql() runs no step")
     check(all(same_frame(getattr(block, attribute), getattr(resumed, attribute)) for attribute in PERSISTED_RESULTS),
           "every persisted result comes back the same: " + ", ".join(PERSISTED_RESULTS))
     check(same_frame(block.calendared_raw, resumed.calendared_raw),
-          "the calendared raw comes back as the fine table without the four columns of step 03")
+          "the calendared raw comes back as the fine table without the four columns of step 1.4")
 
     whole = {}
     console_of(lambda: whole.update(Orchestrator(synthetic_with()).run()))
@@ -61,7 +61,7 @@ def test_persist_and_resume() -> None:
     resumed_configuration = synthetic_with(sql_engine=configuration.sql_engine)
     console = console_of(lambda: from_resumed.update(Orchestrator(resumed_configuration).run(
         preparation=PreparationBlock(resumed_configuration).resume_block_from_sql())))
-    check("STEP 01 ·" not in console and "STEP 07 ·" in console, "with a resumed block the run goes on from step 07")
+    check("STEP 1.2 ·" not in console and "STEP 2.1 ·" in console, "with a resumed block the run goes on from step 2.1")
     check(same_frame(whole["forecast"]["by_year"], from_resumed["forecast"]["by_year"])
           and same_frame(whole["forecast"]["by_month"], from_resumed["forecast"]["by_month"]),
           "the forecast by month and by year of a resumed block = the one of a whole run")

@@ -23,7 +23,7 @@ not compute, except to aggregate them for the picture):
 Colours: the validated categorical order of the reference palette (blue, orange, aqua, violet) on a light
 surface; identity is never colour alone (every line has its direct label or a legend).
 
-Used by step 27 (the files go to <output_folder>/graficos and the report links them).
+Used by step 8.6 (the files go to <output_folder>/graficos and the report links them).
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -316,7 +316,7 @@ def example_series(results: dict) -> str:
 def draw_example_series(results: dict, configuration: Config, series_id: str, path: str) -> str:
     """The series' own monthly rate, its composition's, the exam predictions at h = 1 (framework and baseline), the
     forecast rate with its band; below, for the future months of its GROUP (the series without its states: the neutral
-    one and its twins with a state), every negative state today and expected at expiry (stage 17)."""
+    one and its twins with a state), every negative state today and expected at expiry (stage 4.1)."""
     period = configuration.period_col
     rated = results["rated_units"]
     own = rated[(rated[SERIES_ID_COLUMN] == series_id) & (rated[SYNTHETIC_COLUMN] == 0)
@@ -373,7 +373,7 @@ def draw_example_series(results: dict, configuration: Config, series_id: str, pa
                    + f"  ·  z = {estimate['z']:.2f}  ·  {money_label(estimate['usd_por_predecir'])} por predecir",
                    fontsize=8.5, color=INK, loc="left")
 
-    # the states of the future months of its group: today (the data) and expected at expiry (the box of stage 17)
+    # the states of the future months of its group: today (the data) and expected at expiry (the box of stage 4.1)
     axis = axes[1]
     shown_months = sorted(group_future[period].unique())[:12]
     width = 0.8 / max(len(states), 1)
@@ -491,5 +491,5 @@ def draw_charts(results: dict, configuration: Config) -> dict:
                 drawn[name] = path
         except Exception as error:                     # a chart never stops the run: it says why it is missing
             plt.close("all")
-            configuration.logger.doc(f"[27] chart {name} not drawn: {type(error).__name__}: {error}")
+            configuration.logger.doc(f"[8.6] chart {name} not drawn: {type(error).__name__}: {error}")
     return drawn

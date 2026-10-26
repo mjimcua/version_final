@@ -22,7 +22,7 @@ from test_helpers import check, console_of, finish, synthetic_with
 def build_every_page(explorer: SFFExplorer) -> dict:
     """Every page with every value of its controls; the items of each, by a readable key."""
     pages = {}
-    series = explorer.series_by_money()["s03_fs_id"]
+    series = explorer.series_by_money()["s1_4_fs_id"]
     compositions = explorer.compositions_by_money()["composition_id"]
     pages["negocio"] = explorer.page("negocio")
     for dimension in explorer.breakdown_dimensions():
@@ -73,14 +73,14 @@ def test_from_memory_and_sql() -> None:
     check(len(pages) > 40 and every_item_renders(pages),
           f"{len(pages)} pages built from memory (every series, composition, horizon, dimension and price group): every item renders")
     business_cards = first_cards(pages["negocio"])
-    check(any(label.startswith("Renovado 2026") for label, _, _ in business_cards)
+    check(any(label.startswith("Total 2026") for label, _, _ in business_cards)
           and any(label.startswith("Pipeline que vence en 2027") for label, _, _ in business_cards),
           "the business page answers how 2026 ends and what pipeline falls due in 2027")
-    top_series = in_memory.series_by_money()["s03_fs_id"].iloc[0]
+    top_series = in_memory.series_by_money()["s1_4_fs_id"].iloc[0]
     card = pages[f"ficha · {top_series} · h1"]
     check(sum(isinstance(item, go.Figure) for item in card) >= 4,
           "the card of a series has its history, exam, techniques and money charts")
-    expected = float(results["forecast_series"].set_index("s03_fs_id").loc[top_series, "s20_esperado_usd_total"])
+    expected = float(results["forecast_series"].set_index("s1_4_fs_id").loc[top_series, "s7_2_esperado_usd_total"])
     check(first_cards(card)[0][1] == "$" + f"{expected:,.0f}".replace(",", "."),
           "the card shows the expected USD of the dimension, formatted ($ and Spanish grouping)")
     check(any(isinstance(item, Table) and "role" in item.frame.columns and "uses" in set(item.frame["role"])

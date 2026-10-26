@@ -1,12 +1,12 @@
 """
 test_price_increases.py — The price increases in the uplift: the window, the removal of the increases,
-the month of the cycle and where their effect is lost (price_increases.py, steps 14, 16 and 20).
+the month of the cycle and where their effect is lost (price_increases.py, steps 3.1, 3.3 and 7.2).
 
 A · a hand-made fine table, three price groups: EU with a +5 % increase in 2026-01 (still in its cycle at the
     current month 2026-09), US flat, LA with a step in its last two closed months (not confirmed yet)
 B · the uplift of the window without the increase, and the increase applied again to the future rows inside
     its cycle; after the cycle its effect is lost
-C · the monitor read from the fine table (steps 14 and 16) is the one of the core (step 25)
+C · the monitor read from the fine table (steps 3.1 and 3.3) is the one of the core (step 8.4)
 D · with uplift_window_months = 0 and uplift_without_increases off, the uplift is the one of all the history
 """
 
@@ -16,11 +16,11 @@ import pandas as pd
 
 from main import run
 from price_increases import active_increases, increase_factor, price_group_of
-from step_14_uplift import (closed_view_of_fine_table, estimate_cell_uplifts, price_increases_as_of, renewer_rows,
+from block_3_price import (closed_view_of_fine_table, estimate_cell_uplifts, price_increases_as_of, renewer_rows,
                             uplift_history)
-from step_15_price_diagnostics import show_price_increases
-from step_20_forecast import uplift_of_rows
-from step_25_power_bi import price_increase_monitor
+from block_3_price import show_price_increases
+from block_7_exam_and_assembly import uplift_of_rows
+from block_8_output import price_increase_monitor
 from test_helpers import check, console_of, finish, synthetic_with
 from config import CALENDAR_ROLE_COLUMN, PATH_STATISTICAL, ROLE_PROJECTION, TRUTH_ROLES, UPLIFT_CELL_ID_COLUMN
 
@@ -153,7 +153,7 @@ def test_the_uplift_without_the_increase() -> None:
 
 
 def test_the_monitor_of_the_fine_table_is_the_one_of_the_core() -> None:
-    print("C · the monitor of steps 14 and 16 (fine table) is the one of step 25 (core)")
+    print("C · the monitor of steps 3.1 and 3.3 (fine table) is the one of step 8.4 (core)")
     configuration = synthetic_with()
     results = {}
     console_of(lambda: results.update(run(configuration)))

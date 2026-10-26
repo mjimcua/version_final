@@ -1,7 +1,7 @@
 """
 test_term_column.py — The term of a licence when it is a leveled dimension: the column keeps its name and
-its raw value in every step (step 01 only adds term_level_1), so step 02 wipes ONLY the pipeline of the
-1-year licences that is not known yet and step 20 projects only them; a term_column that is not a
+its raw value in every step (step 1.2 only adds term_level_1), so step 1.3 wipes ONLY the pipeline of the
+1-year licences that is not known yet and step 7.2 projects only them; a term_column that is not a
 mandatory dim stops when the Config is built.
 
     python test_term_column.py
@@ -51,22 +51,22 @@ def wiped_by_term(orchestrator) -> dict:
 def test_the_term_column() -> None:
     print("A · term in one column, leveled: only the 1-year pipeline not known yet is wiped")
     orchestrator = Orchestrator(term_configuration())
-    console = console_of(lambda: orchestrator.run_step("preparation"))         # block 1: steps 00 to 06
+    console = console_of(lambda: orchestrator.run_step("preparation"))         # block 1: steps 1.1 to 1.7
     wiped = wiped_by_term(orchestrator)
     check(wiped["1 year"]["extract"] > 0 and wiped["1 year"]["after"] == 0
           and wiped["3 year"]["after"] == wiped["3 year"]["extract"] > 0,
           "the 1-year pipeline from 2027-09 is wiped, the 3-year one is kept")
-    check("rows wiped per term: {'1 year':" in console, "step 02 says which terms it wiped")
+    check("rows wiped per term: {'1 year':" in console, "step 1.3 says which terms it wiped")
     check({"term", "term_level_1"} <= set(orchestrator.context["calendared_raw"].columns),
           "the term keeps its name in every step; its generated level is next to it")
     results = {}
     console = console_of(lambda: results.update(Orchestrator(term_configuration()).run()))
     check("units at 0 units due:" in console and "wiped on purpose by the calendar" in console,
-          "step 04 tells the units the calendar wiped on purpose from the ones at 0 in the extract")
+          "step 1.5 tells the units the calendar wiped on purpose from the ones at 0 in the extract")
     forecast = results["forecast"]["forecast"]
     projected = forecast[forecast["origen_pipeline"] == "proyectada"]
     check(len(projected) > 0 and set(projected["term"].astype(str)) == {"1 year"},
-          "step 20 projects again only the 1-year licences")
+          "step 7.2 projects again only the 1-year licences")
 
 
 def test_a_term_column_that_is_not_mandatory() -> None:
