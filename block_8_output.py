@@ -792,7 +792,10 @@ ROW_VALUES_STEP_7_2 = [(PIPELINE_ORIGIN_COLUMN, "s7_2_origen_pipeline", "7.2", "
                       ("maduracion_delta_unidades", "s7_2_maduracion_delta_unidades", "4.1",
                        "the maturation of the renewed units: already IN the forecast (expected = today's + this) (SUM)"),
                       ("maduracion_delta_usd", "s7_2_maduracion_delta_usd", "4.1",
-                       "the maturation of the renewed USD: already IN the forecast (expected = today's + this) (SUM)")]
+                       "the maturation of the renewed USD: already IN the forecast (expected = today's + this) (SUM)"),
+                      ("error_captacion_usd", "s7_2_error_captacion_usd", "7.2",
+                       "the error of the volume of a simulated acquisition row in USD (exam of step 5.1); 0 on the other rows. "
+                       "It moves every acquisition row together: add it linearly, then in quadrature with the band (SUM)")]
 
 # The blocks of values of the forecast unit, of the series and of its estimation id:
 # (source column, core name, step, description). A block enters when its step has run.

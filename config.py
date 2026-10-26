@@ -185,6 +185,7 @@ TABLE_UPLIFT_BACKTEST = "backtest_uplift"    # step 3.3: statistical vs contract
 TABLE_FORECAST_MONTH = "forecast_mes"        # step 7.2: the total by month with its bands
 TABLE_BUSINESS_SUMMARY = "resumen_negocio"   # step 7.2: the answers by year
 TABLE_FORECAST_MATURATION = "forecast_maduracion"   # step 7.2: the maturation of the state, month by month
+TABLE_MATURATION_CURVE = "curva_maduracion"          # step 7.2: the curve of every dated state (step 4.1) and its exam by h
 TABLE_VALIDATION = "validacion"              # step 8.5: the final checks across steps
 
 # ─── step 7.1: the exam of the portfolio (framework vs the baseline) ──────────────

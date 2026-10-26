@@ -38,7 +38,7 @@ from config import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, Config, DUE_UNI
                     METHOD_FRAMEWORK, PATH_CONTRACT, PATH_CONTRACT_NEUTRAL, PATH_STATISTICAL, PIPELINE_ORIGIN_COLUMN,
                     PIPELINE_PROJECTED, PIPELINE_REAL, PIPELINE_SIMULATED, RATE_COLUMN, RATE_FROM_POOL,
                     ROLE_PROJECTION, ROLE_TEST, SERIES_ID_COLUMN, SYNTHETIC_COLUMN, TABLE_BUSINESS_SUMMARY,
-                    TABLE_FORECAST_MATURATION, TABLE_FORECAST_MONTH, TABLE_FORECAST_TOTAL, TABLE_PORTFOLIO_EXAM,
+                    TABLE_FORECAST_MATURATION, TABLE_FORECAST_MONTH, TABLE_MATURATION_CURVE, TABLE_FORECAST_TOTAL, TABLE_PORTFOLIO_EXAM,
                     TABLE_PORTFOLIO_EXAM_SUMMARY, TABLE_SERIES_EXAM, TABLE_SERIES_EXAM_DETAIL, TOTAL_ORIGIN_EXPECTED,
                     TOTAL_ORIGIN_PROJECTED, TOTAL_ORIGIN_RENEWED, TOTAL_ORIGIN_SIMULATED, TOTAL_ORIGIN_TOTAL,
                     TRUTH_ROLES, TS_REENTRY, UNIT_ID_COLUMN, UNITS_AT_DUE_COLUMN, UNITS_TODAY_COLUMN,
@@ -46,7 +46,7 @@ from config import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, Config, DUE_UNI
                     UPLIFT_ORIGIN_MANDATORY, WITH_DATES_COLUMN, has_no_negative_state, join_columns, state_combination)
 from block_2_rate import CHOSEN_MODE, DEFAULT_MODE, RateBox, band_of_horizon
 from block_3_price import contract_rule, state_factor_of_rows
-from block_4_customer_states import (StateMaturation, honest_total_exam, maturation_by_month, show_maturation_by_month,
+from block_4_customer_states import (StateMaturation, curve_table, honest_total_exam, maturation_by_month, show_maturation_by_month,
                                      show_states_above_final, states_above_final)
 from block_5_future_pipeline import FuturePipeline
 from block_6_time_series import TimeSeriesUniverse
@@ -708,7 +708,9 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     maturation = maturation_by_month(future, box_tables, box, configuration)
     states_detector = states_above_final(maturation, box, configuration) if maturation is not None else None
 
-    # [8] the totals
+    # [8] the totals; every simulated acquisition row keeps its error of volume in USD (the exam of step 5.1), so the
+    # report can add it to the band of any aggregate (it moves every acquisition row of a month together)
+    future["error_captacion_usd"] = future["esperado_usd"] * acquisition_error_of_rows(future, acquisition_exam, configuration)
     by_month, by_year = totals(future, fine_table, configuration, series_exam, time_series_universe,
                                price_error=uplift_verdict.get("error_precio_total", 0.0), acquisition_exam=acquisition_exam)
     configuration.log_action(STEP_7_2_LABEL, 8, f"{len(by_month)} months · {len(by_year)} years"
@@ -755,6 +757,9 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     configuration.write_table(STEP_7_2_LABEL, check_log, by_year, TABLE_BUSINESS_SUMMARY)
     if maturation is not None:
         configuration.write_table(STEP_7_2_LABEL, check_log, maturation, TABLE_FORECAST_MATURATION)
+    curves = curve_table(box, configuration)
+    if len(curves):
+        configuration.write_table(STEP_7_2_LABEL, check_log, curves, TABLE_MATURATION_CURVE)
 
     # [09] the count of the checks; stop if anything failed
     configuration.log_action(STEP_7_2_LABEL, 11, "counting the checks")
@@ -1096,8 +1101,9 @@ def totals(future: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config
     for origin in (PIPELINE_REAL, PIPELINE_PROJECTED, PIPELINE_SIMULATED):
         by_month[f"esperado_{origin}"] = future[future[PIPELINE_ORIGIN_COLUMN] == origin].groupby(period_column)["esperado_usd"].sum()
     # the error of the volume of the simulated acquisitions, from their exam (step 5.1), row by row
-    by_month["error_captacion_usd"] = (future["esperado_usd"] * acquisition_error_of_rows(future, acquisition_exam, configuration)
-                                       ).groupby(future[period_column]).sum()
+    error_of_acquisition = (future["error_captacion_usd"] if "error_captacion_usd" in future.columns
+                            else future["esperado_usd"] * acquisition_error_of_rows(future, acquisition_exam, configuration))
+    by_month["error_captacion_usd"] = error_of_acquisition.groupby(future[period_column]).sum()
 
     # the time_series universe: its revenue, its re-entry (pipeline and expected) and its half band, per month
     universe_by_month = (time_series_universe.by_month() if time_series_universe is not None

@@ -210,7 +210,31 @@ Power BI solo relacione y sume, sin lógica dentro del informe.
 | `sff_credibility` | referencia de credibilidad | `s2_3_credibility_ref_id` | soporte, tasa, k y sus partes |
 | `sff_credibility_members` | referencia × forecast serie | `credibility_ref_id` | qué series entran en la tasa de la referencia: `borrower` (se apoya en ella) o `lender` (solo aporta datos) |
 | `sff_series_dynamics` | forecast serie | `fs_id` | φ, tendencia y estacionalidad de la propia serie, y si son medibles |
+| `sff_bandas_reales` y `sff_bandas_reales_resumen` (las escribe `informe_forecast.py`, preguntas 6.1 y 6.2) | nivel × grupo × mes (o `acumulado`) × h; y nivel × base × h × regla | — (tablas sueltas) | el error real del examen del 7.1 sumado a cada nivel (serie, composición, subregión, región, total) frente a la semibanda de cada regla de suma (lineal, composición, cuadratura, binomial), y su resumen: cobertura, cociente error/banda, error medio y parte de sesgo. Para decidir con datos reales cómo se suman las bandas |
+| `sff_curva_maduracion` (paso 7.2, desde el 26-oct-2026) | estado con fechas × k (meses antes de vencer, 12 = «12 o más») | — (tabla suelta) | la curva de maduración del paso 4.1: `parte_que_entra` (f(k), la distribución de cuándo se pone el estado final), `parte_visible` (F(k)), `p_entrar` (p(k), lo que usa el forecast), `tope`, `se_usa` (0 si la curva suspendió su examen) y el examen por antelación (`error_curva_pp`, `error_sin_curva_pp`, en blanco donde no se examinó). La lee la pregunta 2.1 de `informe_forecast.py` |
 | `sff_ts_examen` (paso 6.1) | candidato (regla del nivel × ventana del valor por unidad) × horizonte | — (tabla suelta) | el examen de la simulación time series: error medio del total del mes a cada horizonte con cada candidato (`candidato`, `regla_nivel`: `region`, `credibilidad`, `total`, `sin_nivel`; `ventana_valor_medio`: 1, 3 o 12 meses), su error medio y el candidato elegido (`elegida = 1`), que es el que simula y da la banda. Desde el 26-oct-2026 la ventana del valor por unidad también la elige el examen (antes, 12 meses fijos) |
+
+## El forecast contado: `informe_forecast.py` (desde el 26-oct-2026)
+
+El script cuenta el forecast pregunta a pregunta sobre las tablas de una ejecución, sin volver a ejecutar nada. Cada pregunta tiene una SQL (SQL Server; también corre en el SQLite de los sintéticos), su CSV y uno o más gráficos. Todo va a `salida/informe/`, o a `salida/informe_<base>/` con los sintéticos.
+
+Los capítulos:
+
+1. el dato real;
+2. lo que se simula para construir;
+3. la pipeline construida del año que viene;
+4. el resultado de los dos años;
+5. cómo desgranarlo.
+
+Uso: `report(configuration)`, `report(configuration, ["3.1"])` o `python informe_forecast.py parecido 2026-10`.
+
+La banda que se puede desagregar (`composition_band_query`) se calcula así:
+
+- las filas de una composición (`s2_2_stage3_id`, la misma tasa) se mueven juntas;
+- composiciones distintas se mueven por separado;
+- el error del volumen de la adquisición simulada (`s7_2_error_captacion_usd`, nueva columna del núcleo) mueve todas las adquisiciones a la vez.
+
+Con ello, la semibanda es √(Σ por composición (Σ desviaciones)² + (Σ error de adquisición)²). La de una región se calcula en la región, nunca sumando las de sus subregiones. La suma de las bandas de las filas es el peor caso. El test `test_informe_forecast.py` comprueba que la banda por composición es la misma calculada en pandas y que queda entre las filas independientes y la banda lineal.
 
 ## El veredicto y el perfil de la ejecución (paso 8.6, desde el 25-oct-2026)
 

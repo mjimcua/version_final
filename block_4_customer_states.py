@@ -587,6 +587,51 @@ def show_maturation_by_region(fine_table: pd.DataFrame, box: StateMaturation, co
     return table
 
 
+def when_the_state_is_set(box, state: str, configuration: Config) -> tuple:
+    """(when, tope) of one dated state, from the cohorts the box learns from: per k (months before due, 12 = "12 or
+    more"), f = Σ units that took the state k months before / Σ units in the state at the end (the distribution of
+    WHEN the final state is set), F = Σ f(k ≥ h) (the share already visible h months before), p = the probability
+    that a unit not in the state h months before ends in it (the curve the forecast uses); tope = Σ units in the state
+    / Σ units due."""
+    months = int(configuration.maturation_months)
+    units_column = configuration.pipeline_units_col
+    history = box.history
+    in_state = is_in_state(history, state)
+    columns = configuration.maturation_columns_of(state)
+    entered = history.loc[in_state, columns].fillna(0.0).sum().to_numpy(dtype=float)
+    units_in_state = float(history.loc[in_state, units_column].sum())
+    units_due = float(history[units_column].sum())
+    distribution = entered / units_in_state if units_in_state > 0 else np.zeros(months + 1)
+    visible = np.cumsum(distribution[::-1])[::-1]                    # F(h) = Σ f(k ≥ h)
+    curve = MaturationCurve(history, state, configuration).portfolio_table().set_index("meses_antes")["p_tomar_estado"]
+    when = pd.DataFrame({"meses_antes": np.arange(months + 1), "f": distribution, "F": visible})
+    when["p"] = when["meses_antes"].map(curve).fillna(0.0).to_numpy(dtype=float)
+    tope = units_in_state / units_due if units_due > 0 else np.nan
+    return when, tope
+
+
+def curve_table(box, configuration: Config) -> pd.DataFrame:
+    """The table sff_curva_maduracion (written by step 7.2): one row per dated state and k (months before due, 12 =
+    "12 or more"): parte_que_entra = f(k), parte_visible = F(k), p_entrar = p(k), the tope of the state, whether its
+    curve is used, and the exam of the curve at that horizon (mean |error| of the final share, with the curve and
+    without it: the states seen then), blank where the exam did not look. The SQL of the report reads it."""
+    rows = []
+    for state, exam in getattr(box, "curve_exams", {}).items():
+        when, tope = when_the_state_is_set(box, state, configuration)
+        exam_by_h = exam.set_index("h") if exam is not None and len(exam) else pd.DataFrame()
+        for _, point in when.iterrows():
+            k = int(point["meses_antes"])
+            examined = k in exam_by_h.index
+            rows.append({"estado": state, "meses_antes": k, "parte_que_entra": float(point["f"]),
+                         "parte_visible": float(point["F"]), "p_entrar": float(point["p"]), "tope": float(tope),
+                         "se_usa": int(state in box.curves),
+                         "error_curva_pp": float(exam_by_h.loc[k, "error_curva_abs_pp"]) if examined else np.nan,
+                         "error_sin_curva_pp": float(exam_by_h.loc[k, "error_vista_abs_pp"]) if examined else np.nan,
+                         "cohortes": f"{box.history_months[0]}..{box.history_months[-1]}" if box.history_months else ""})
+    return pd.DataFrame(rows, columns=["estado", "meses_antes", "parte_que_entra", "parte_visible", "p_entrar", "tope",
+                                       "se_usa", "error_curva_pp", "error_sin_curva_pp", "cohortes"])
+
+
 def maturation_explained(box, fine_table: pd.DataFrame, state: str, configuration: Config) -> dict:
     """The numbers of the explanation of the curve of one dated state, from the cohorts the box learns from
     (box.history: the last maturation_history_months closed months) and the pipeline of today:
@@ -600,18 +645,8 @@ def maturation_explained(box, fine_table: pd.DataFrame, state: str, configuratio
                 seen then (no curve)"""
     months = int(configuration.maturation_months)
     units_column, period = configuration.pipeline_units_col, configuration.period_col
-    history = box.history
-    in_state = is_in_state(history, state)
-    columns = configuration.maturation_columns_of(state)
-    entered = history.loc[in_state, columns].fillna(0.0).sum().to_numpy(dtype=float)
-    units_in_state = float(history.loc[in_state, units_column].sum())
-    units_due = float(history[units_column].sum())
-    distribution = entered / units_in_state if units_in_state > 0 else np.zeros(months + 1)
-    visible = np.cumsum(distribution[::-1])[::-1]                    # F(h) = Σ f(k ≥ h)
-    when = pd.DataFrame({"meses_antes": np.arange(months + 1), "f": distribution, "F": visible})
-    tope = units_in_state / units_due if units_due > 0 else np.nan
-
-    curve = MaturationCurve(history, state, configuration).portfolio_table().set_index("meses_antes")["p_tomar_estado"]
+    when, tope = when_the_state_is_set(box, state, configuration)
+    curve = when.set_index("meses_antes")["p"]
     future = fine_table[(fine_table[CALENDAR_ROLE_COLUMN] == "proyeccion") & (fine_table[units_column] > 0)]
     months_ahead = future[period].map(lambda month: (month - box.as_of).n)
     future = future[(months_ahead >= 1) & (months_ahead <= months)]

@@ -455,7 +455,7 @@ Decide, en los meses de examen, qué uplift predice mejor el precio de las renov
 Predice cuántas unidades de cada mes futuro llevarán un estado negativo (softcancel, dormant…) cuando venzan. Es una caja que aprende de los meses cerrados y que llaman el examen (7.1) y el forecast (7.2). Con `distribute_marks` apagado es la identidad: maduración 0.
 
 - **Entra:** `fine_table` (1.4).
-- **Sale:** `state_maturation`, con `mature(unidades)`: por grupo (la serie sin sus estados), mes y combinación, las unidades de hoy y las unidades al vencer. También deja maturation\_by\_region, la maduración por región de la acción 3. No escribe tablas; la 7.2 escribe `sff_forecast_maduracion`.
+- **Sale:** `state_maturation`, con `mature(unidades)`: por grupo (la serie sin sus estados), mes y combinación, las unidades de hoy y las unidades al vencer. También deja maturation\_by\_region, la maduración por región de la acción 3. No escribe tablas; la 7.2 escribe su curva (sff\_curva\_maduracion, con curve\_table) y `sff_forecast_maduracion`.
 - **Depende de:** 1.4, y de las columnas de maduración (`<estado>_month_k`) que valida la 1.2.
 - **Acciones:**
   1. Construye la caja: los meses cerrados de los que aprende, los estados con curva (fechados) y los que usan la proporción histórica.
@@ -572,7 +572,7 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la pipeline fut
   - `series_exam` (7.1): el error de la tasa por horizonte;
   - `pool_reference` (2.4) y `backtest` (2.6): la confianza de cada fila.
 - **También declara** `series_estimate` (2.3), `pool_series` (2.4) y `rated_units` (1.7). Solo los usaría si no le llegara la caja 2.7; sobran en el grafo.
-- **Sale:** `forecast`: cada fila futura con tasa, uplift, esperado (con los estados de hoy y al vencer), bandas y confianza; los totales por mes y año; la maduración mes a mes. Escribe `sff_forecast_mes`, `sff_resumen_negocio` y `sff_forecast_maduracion`.
+- **Sale:** `forecast`: cada fila futura con tasa, uplift, esperado (con los estados de hoy y al vencer), bandas y confianza (y, desde el 26-oct, el error del volumen de cada adquisición simulada, que llega al núcleo como s7\_2\_error\_captacion\_usd); los totales por mes y año; la maduración mes a mes. Escribe `sff_forecast_mes`, `sff_resumen_negocio`, sff\_curva\_maduracion y `sff_forecast_maduracion`.
 - **Depende de:** 2.7, 3.1, 3.3, 4.1, 5.1, 6.1 y 7.1.
 - **Acciones:**
   1. Toma las filas futuras del extracto.
@@ -595,7 +595,7 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la pipeline fut
   5. Los totales son la suma de las filas.
   6. La maduración mueve unidades, no las crea: Σ al vencer = Σ que vence, en unidades y USD, y una fila conserva entre 0 y todas sus unidades.
   7. Ningún estado negativo está HOY 2 pp o más por encima de su proporción final en ningún mes futuro (aviso: el extracto lo pone antes de tiempo).
-  8. a 10. `sff_forecast_mes`, `sff_resumen_negocio` y `sff_forecast_maduracion` se escriben y se releen.
+  8. a 10. `sff_forecast_mes`, `sff_resumen_negocio` y `sff_forecast_maduracion` (y sff\_curva\_maduracion) se escriben y se releen.
 
 ### 7.3 · Total por año y origen
 
