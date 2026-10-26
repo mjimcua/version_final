@@ -563,3 +563,26 @@ Busca estas secciones por su título:
 - **`ESTADOS DEL CLIENTE POR ENCIMA DE SU PROPORCIÓN FINAL (DETECTOR)`** (paso 7.2, comprobación 8 en WARN). Un estado solo crece, así que HOY no puede estar por encima de su proporción final histórica. Si lo está en `mark_excess_warning_pp` puntos o más en algún mes, se listan el mes, la estado, hoy frente a final, las unidades de más y lo que le falta al forecast si esas unidades renuevan como neutras. Tras arreglar el dormant en el SQL debería decir "ningún estado supera su proporción final".
 
 - **`ADQUISICIÓN SIMULADA FRENTE AL AÑO ANTERIOR`** (paso 7.2, comprobación 7 en WARN). El nivel de cada valor de adquisición (ventas de los últimos meses / las mismas un año antes) y, mes a mes, lo vendido un año antes frente a lo simulado. El cociente debe parecerse al nivel; si sale fuera de 0,5–2× hay un aviso. `sin_referencia` significa que el extracto no llega al vencimiento de las ventas recientes y se simula lo mismo que un año antes.
+
+## Paso 4.1 · El gráfico que explica la curva de maduración (desde el 26-oct-2026)
+
+`salida/graficos/04_1_curva_de_maduracion_explicada.png`. Se ve siempre, también con la consola en silencio, y la consola dice dónde está. Tiene una fila por estado con fechas y tres paneles:
+
+1. **¿Cuándo se pone el estado?**
+   - Las barras son la distribución de los meses antes de vencer en que se puso el estado final; suman 100 %.
+   - La línea es la parte del final que ya se ve h meses antes.
+   - La marca de puntos dice cuándo ya se ve la mitad.
+2. **La pipeline de hoy.** Por mes de vencimiento:
+   - lo que ya está en el estado;
+   - lo que añade la curva hasta vencer;
+   - la línea del tope histórico.
+3. **¿Cuánto acierta según la antelación?** El error de la cuota final en el examen (meses cerrados):
+   - con la curva;
+   - sin ella;
+   - junto al umbral para usarla (`maturation_curve_max_error_pp`).
+
+Una fila con el título en naranja es una curva que suspendió: no se usa, y el estado toma su cuota histórica.
+
+**Qué mirar:**
+- Si la barra clara del panel 2 lleva los meses lejanos muy por encima de lo que se ve, el forecast descansa en la curva: el panel 3 dice cuánto fiarse de ella a esa antelación.
+- Si en el panel 1 hay mucho peso a 12+ meses y el examen falla, las columnas del estado no son fechas de entrada. Es lo que pasó con el dormant del 25-oct: eran fotos de cada mes.

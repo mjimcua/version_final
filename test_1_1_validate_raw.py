@@ -87,6 +87,10 @@ def test_the_log() -> None:
     check("STEP 1.1" not in console and "entrenamiento" not in console
           and "STEP 1.1" in written and "1. ok" in written and "unidades_vencen" in written,
           "console_log_level WARNING: the console shows nothing of a clean step; the file keeps every line and every table")
+    announced = console_of(lambda: (quiet.show_figure("4.1", "un gráfico de detalle", "detalle.png"),
+                                    quiet.show_figure("4.1", "la curva explicada", "curva.png", always=True)))
+    check("detalle.png" not in announced and "curva.png" in announced,
+          "with a quiet console, only the charts that explain the forecast (always=True) are announced on screen")
     synthetic_with()    # leave the log as the other tests expect it
 
 

@@ -601,7 +601,7 @@ class Config:
     structural_timevarying_dims: dict = field(default_factory=dict)   # [CFG 1.2 1.7 2.2 4.1 5.1 7.1 8.6] column → "negative" | "positive"
     distribute_marks: bool = True   # [CFG 4.1] the box of stage 4.1 matures the negative states still to come (the forecast
                                     # carries them). False = the identity box: the forecast with today's states
-    maturation_dims: list = field(default_factory=list)  # [CFG 1.2 4.1 7.1 8.6] the states whose extract says WHEN they were set:
+    maturation_dims: list = field(default_factory=list)  # [CFG 1.2 4.1 8.6] the states whose extract says WHEN they were set:
                                                       # every one carries <state>_month_0 … <state>_month_<maturation_months>
                                                       # (the units of the row in the state k months before due; 0 = the due month,
                                                       # the last one = that many months or more). Step 1.1 fails without them.
@@ -820,6 +820,11 @@ class Config:
     maturation_min_units: float = 100.0           # [4.1] a cell (or its calendar month) needs this many units to measure itself
     maturation_history_months: int = 12           # [CFG 4.1 8.6] the final states are measured over the last N closed months
     maturation_regions_shown: int = 8             # [4.1] the regions of the maturation by region (the largest by units due)
+    maturation_curve_max_error_pp: float = 5.0    # [VER 4.1] a dated state uses its curve only when the exam of the curve (4.1)
+                                                  # misses its final share by less than the states seen then AND by less
+                                                  # than this (mean |error| over the horizons, pp); otherwise it takes its
+                                                  # historical share, like an undated state (26-oct-2026: dormant in the real
+                                                  # run, 70 pp with and without the curve, took 17.6 % off 2026)
     mark_excess_warning_pp: float = 2.0           # [4.1 7.2] a future month whose state (dormant…) is TODAY this many points above
                                                   # its final share in the history: WARN (a state only grows, so the extract
                                                   # shows too much in the state, e.g. a fresh cohort set to dormant before its first use)
@@ -890,6 +895,7 @@ class Config:
         # (block 1): step 8.6 writes them (sff_veredicto_bloques, sff_perfil_datos) and the report reads them
         self.block_verdicts = {}
         self.data_profile = None
+        self.rejected_maturation_dims = []    # step 4.1: the dated states whose curve failed its exam (historical share)
 
         # [1] every timevarying column carries a valid sign
         invalid_signs = {column_name: sign for column_name, sign in self.structural_timevarying_dims.items()
@@ -1121,10 +1127,13 @@ class Config:
                 finally:
                     handler.release()
 
-    def show_figure(self, step_label: str, what: str, path: str) -> None:
-        """A chart of the run: the log line says what it is and where the PNG is; in a notebook it is shown too."""
+    def show_figure(self, step_label: str, what: str, path: str, always: bool = False) -> None:
+        """A chart of the run: the log line says what it is and where the PNG is; in a notebook it is shown too
+        (always: also with a quiet console, like the final table — the charts that explain the forecast)."""
         self.logger.doc(f"[{step_label}] chart: {what} → {path}")
-        if running_in_notebook() and self.console_shows_the_documentation:
+        if not self.console_shows_the_documentation and always:
+            print(f"[{step_label}] gráfico: {what} → {path}")
+        if running_in_notebook() and (self.console_shows_the_documentation or always):
             from IPython.display import Image, display
             sys.stdout.flush()
             display(Image(filename=path))
@@ -1221,6 +1230,12 @@ class Config:
     def maturation_columns_of(self, state: str) -> list:
         """The maturation columns of one state, k = 0 … maturation_months (the last one: that many months or more)."""
         return [f"{state}{MATURATION_COLUMN_INFIX}{months_before}" for months_before in range(int(self.maturation_months) + 1)]
+
+    @property
+    def maturation_dims_in_use(self) -> list:
+        """The dated states whose maturation curve is used: maturation_dims without the ones whose curve failed its exam
+        in step 4.1 (rejected_maturation_dims). The box, the forecast and the honest exam of step 7.1 read this."""
+        return [state for state in self.maturation_dims if state not in self.rejected_maturation_dims]
 
     @property
     def maturation_columns(self) -> list:

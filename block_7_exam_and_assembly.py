@@ -200,7 +200,7 @@ def examine_series(rated_units: pd.DataFrame, series_estimate: pd.DataFrame, poo
     per_series = errors_per_series(detail, configuration)
     by_month, summary = errors_of_the_total(detail, methods, configuration)
     honest = None
-    if configuration.maturation_dims and fine_table is not None:
+    if configuration.maturation_dims_in_use and fine_table is not None:
         honest = honest_total_exam(detail[detail["method"] == METHOD_FRAMEWORK], fine_table, configuration)
         by_month, summary = add_the_honest_exam(by_month, summary, honest)
     configuration.log_action(STEP_7_1_LABEL, 3, "per method, all series: " + " · ".join(
@@ -305,15 +305,16 @@ def show_the_honest_exam(honest: pd.DataFrame, configuration: Config) -> None:
     """The honest exam on screen: the error of the total with the final states (the ceiling), with the states seen at
     the origin, and with those plus the maturation curve, per horizon and month; with a VALORACIÓN line."""
     doc = configuration.logger.doc
-    doc(f"[{STEP_7_1_LABEL}] ══════════ EXAMEN HONESTO DE LOS ESTADOS DEL CLIENTE ({', '.join(configuration.maturation_dims)}) ══════════")
+    doc(f"[{STEP_7_1_LABEL}] ══════════ EXAMEN HONESTO DE LOS ESTADOS DEL CLIENTE ({', '.join(configuration.maturation_dims_in_use)}) ══════════")
     doc(f"[{STEP_7_1_LABEL}] the total of every exam month predicted three ways with the same rates of the framework: with the "
         f"FINAL states (techo: what predicting the states perfectly would give, the exam of always), with the states as they "
         f"were h months before (estados_hoy) and with those plus the maturation curve known at the origin (honesto):")
     without_columns = [state for state, sign in configuration.structural_timevarying_dims.items()
-                       if sign == "negative" and state not in configuration.maturation_dims]
+                       if sign == "negative" and state not in configuration.maturation_dims_in_use]
     if without_columns:
-        doc(f"[{STEP_7_1_LABEL}] OJO: {', '.join(without_columns)} no trae(n) columnas de maduración: aquí siguen con su estado "
-            f"FINAL. El examen es honesto solo para {', '.join(configuration.maturation_dims)}; para los demás estados "
+        doc(f"[{STEP_7_1_LABEL}] OJO: {', '.join(without_columns)} no trae(n) columnas de maduración, o su curva no pasó su examen "
+            f"(4.1): aquí siguen con su estado FINAL. El examen es honesto solo para "
+            f"{', '.join(configuration.maturation_dims_in_use)}; para los demás estados "
             f"sigue siendo el techo")
     error_columns = ["techo_estados_finales_error_total", "estados_hoy_error_total", "honesto_error_total"]
     shown = honest[["mes", "h", "renovadas_reales"] + error_columns].copy()

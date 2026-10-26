@@ -235,6 +235,7 @@ class Orchestrator:
         # the verdicts of this run start empty (a Config may have run before)
         self.configuration.block_verdicts = {}
         self.configuration.data_profile = None
+        self.configuration.rejected_maturation_dims = []
         if preparation is not None:
             self.use_this_preparation_block(preparation)
         for step_name in self.order:

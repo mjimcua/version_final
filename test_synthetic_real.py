@@ -133,6 +133,41 @@ def test_the_maturation() -> None:
     check(np.allclose(curve["visible_del_final"].to_numpy()[:11], SOFTCANCEL_SEEN_MONTHS_BEFORE[:11], atol=0.03),
           "the curve learned from the closed months is the one the synthetic was built with (share seen k months before)")
 
+    # the curve is used only if its exam passes; a threshold of 0 pp makes it fail: the state takes its historical share
+    from block_4_customer_states import learn_the_maturation
+    with contextlib.redirect_stdout(io.StringIO()):
+        box = learn_the_maturation(fine_table, configuration)
+    check(configuration.rejected_maturation_dims == [] and "softcancel" in box.curves
+          and configuration.maturation_dims_in_use == ["softcancel"],
+          "the softcancel curve passes its exam (it beats the states seen then): it is used")
+
+    # the chart that explains the curve: when the state is set (a distribution), today's pipeline, the error by horizon
+    from block_4_customer_states import maturation_explained
+    from block_4_customer_states import MATURATION_EXPLAINED_CHART
+    from time_series_charts import chart_path
+    explained = maturation_explained(box, fine_table, "softcancel", configuration)
+    when, today, exam = explained["when"], explained["today"], explained["exam"]
+    check(abs(when["f"].sum() - 1) < 1e-9 and abs(when["F"].iloc[0] - 1) < 1e-9 and when["F"].is_monotonic_decreasing,
+          "the explanation: f(k) is a distribution (it adds up to 1) and F(h) falls from 1 at the due month")
+    final_share = today["visto_hoy"] + today["anade_la_curva"]
+    check(len(today) > 0 and ((today["visto_hoy"] >= 0) & (final_share <= 1)).all() and explained["used"]
+          and (exam["error_curva_abs_pp"] < exam["error_vista_abs_pp"]).all(),
+          "the explanation: today's pipeline, seen + what the curve adds, and the curve beats the states seen at every horizon")
+    check(os.path.exists(chart_path(configuration, MATURATION_EXPLAINED_CHART)),
+          "step 4.1 draws the chart that explains the curve")
+    strict_fields = {name: getattr(configuration, name) for name in configuration.__dataclass_fields__}
+    strict_fields["maturation_curve_max_error_pp"] = 0.0
+    strict = type(configuration)(**strict_fields)
+    console = io.StringIO()
+    with contextlib.redirect_stdout(console):
+        strict_box = learn_the_maturation(fine_table, strict)
+    check(strict.rejected_maturation_dims == ["softcancel"] and "softcancel" not in strict_box.curves
+          and strict.maturation_dims_in_use == [] and "DECISIÓN softcancel: su curva NO se usa" in console.getvalue()
+          and "WARN  every dated state's curve beats the states seen then" in console.getvalue(),
+          "a curve that fails its exam is not used: the state takes its historical share, with a warning and the decision")
+    check(not maturation_explained(strict_box, fine_table, "softcancel", strict)["used"],
+          "the chart that explains the curve says a rejected curve is not used")
+
 
 if __name__ == "__main__":
     test_the_extract()

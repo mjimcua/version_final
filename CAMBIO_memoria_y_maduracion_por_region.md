@@ -99,3 +99,78 @@ Con el extracto real, el navegador se quedó sin memoria mostrando la salida: un
 - **Nuevo `console_log_level`** en la Config. Con `"WARNING"` y un `log_file`, la consola (el notebook) solo enseña avisos, fallos y la tabla final; el fichero guarda todas las líneas y todas las tablas.
 - **La Config de producción de `main.py`** ya lo trae: `log_file = salida/sff_ejecucion.log` y `console_log_level = "WARNING"`. Con `console_log_level=None` se vuelve a ver todo.
 - **Test:** en `test_1_1_validate_raw`, la consola queda vacía con un paso limpio y el fichero tiene cada línea y cada tabla.
+
+## 6 · Una curva de maduración que suspende su examen no se usa (paso 4.1)
+
+La ejecución real dio 126,6 M$ en 2026, unos 5,5 M$ por debajo de lo esperado (124,2 M$ el 19-oct + 7,4 M$ de time series ≈ 132 M$), y una banda de ±6,5 M$. Las tres consultas sobre las tablas de la ejecución lo explican:
+
+- **La maduración resta 6,4 M$ en 2026 (−17,6 %) y 12,8 M$ en 2027.** Mes a mes, octubre-diciembre: −1,52, −2,72 y −2,16 M$. La tasa en unidades cae de 0,64-0,66 (real) a 0,56-0,58 (previsto). El 19-oct la maduración restaba 0,84 M$ en todo 2026.
+- **El examen ya lo decía:**
+  - la curva de **dormant** falla la cuota final por 70,30 pp, lo mismo que sin curva;
+  - el examen honesto (con los estados predichos) yerra un 23,0 % a 1 mes y un 11,9 % a 6, frente a 1,0 % y 0,9 % con los estados vistos (gana 0 de 6 meses).
+- **La banda oficial usa el error del examen honesto,** así que ese 23 % es casi toda la banda: tasa 6,2 M$ de 6,5 M$; precio 0,18 M$; time series 0,31 M$.
+
+**El cambio:**
+- una curva solo se usa si su examen falla la cuota final por menos que los estados vistos entonces y por menos de `maturation_curve_max_error_pp` (5 pp, nuevo en la Config);
+- si no, el estado toma su cuota histórica, como uno sin fechas, en el forecast (la caja de 4.1) y en el examen honesto (7.1); queda en `rejected_maturation_dims`;
+- `maturation_dims_in_use` dice qué curvas se usan;
+- 4.1 tiene una comprobación más (aviso), una línea `DECISIÓN` en pantalla, y la fila del veredicto del B4 dice que la curva no se usa.
+
+En el parecido al real, la curva de softcancel pasa (se usa) y el forecast no cambia. Con los datos reales, dormant dejará de usar su curva: la maduración de 2026 debería volver a algo como el −0,8 M$ del 19-oct, y la banda al 1-2 % del examen.
+
+**Queda por entender por qué las fechas de dormant no encajan con la curva:** la curva supone que un estado, una vez puesto, no se quita, y que `dormant_month_k` son las unidades que entraron en el estado k meses antes de vencer. Un dormant que se activa de nuevo antes de vencer rompe esa idea.
+
+
+## 7 · El gráfico que explica la curva de maduración (paso 4.1)
+
+Para contar por qué el forecast es este y no otro: «los estados del cliente maduran de esta forma; suponemos que las cohortes futuras maduran igual; eso proyecta X, y la curva acierta con este error según la antelación».
+
+**Dónde está:** `salida/graficos/04_1_curva_de_maduracion_explicada.png`. Se ve siempre en el notebook, también con la consola en silencio (`show_figure(..., always=True)`), como la tabla final.
+
+**Una fila por estado con fechas (softcancel, dormant) y tres paneles:**
+
+1. **¿Cuándo se pone el estado?** Es una distribución de probabilidad.
+   - Barras: f(k), la parte del estado final que se puso k meses antes de vencer (12+ = 12 o más). Suman 100 %.
+   - Línea: F(h) = Σ f(k ≥ h), la parte del final ya visible h meses antes.
+   - Marca: el mes en que ya se ve la mitad.
+   - El título da el tope π: la parte de lo que vence que acaba en el estado.
+2. **La pipeline de hoy, por mes de vencimiento.**
+   - Barra oscura: lo que ya está en el estado hoy.
+   - Barra clara: lo que añade la curva hasta vencer, (1 − visto) × p(h).
+   - Línea discontinua: el tope de los últimos 12 meses cerrados.
+3. **¿Cuánto acierta según la antelación?** El error medio de la cuota final en el examen (meses cerrados), a 1, 3, 6 y 12 meses:
+   - con la curva;
+   - sin curva (el estado visto entonces);
+   - junto al umbral para usarla (5 pp).
+
+Si la curva suspende su examen, la fila lo dice en naranja: «LA CURVA NO SE USA».
+
+**Las fórmulas, para describirla de forma analítica.** Sobre las cohortes de los 12 meses cerrados, ponderadas por unidades (U = unidades que vencen, M = unidades en el estado al vencer, V_h = las que ya lo estaban h meses antes):
+
+- π = ΣM / ΣU;
+- f(k) = Σ entradas en k / ΣM;
+- F(h) = ΣV_h / ΣM;
+- p(h) = Σ(M − V_h) / Σ(U − V_h);
+- previsión: M̂ = V + (U − V) · p(h).
+
+**Los números salen del paso 4.1:** `maturation_explained(box, fine_table, state, configuration)` en `block_4_customer_states.py`. El gráfico (`draw_maturation_explained` en `graficos.py`) solo dibuja.
+
+En el parecido al real (softcancel):
+
+| Medida | Valor |
+|---|---|
+| Tope π | 7,6 % |
+| La mitad del estado final ya se ve | 5 meses antes |
+| Se pone 10 meses antes | 35 % |
+| Se pone el mismo mes | 28 % |
+| Error de la curva | 0,03-0,09 pp |
+| Error sin curva | 2,15 pp a 1 mes → 7,15 pp a 12 meses |
+
+**Tests:**
+- `test_synthetic_real` comprueba que:
+  - f suma 1 y F baja desde 1;
+  - lo visto + lo añadido no pasa de 100 %;
+  - la curva gana al estado visto en cada antelación;
+  - el PNG existe;
+  - una curva rechazada sale como «no se usa».
+- `test_1_1` comprueba que, con la consola en silencio, solo se anuncian los gráficos `always`.

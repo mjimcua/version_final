@@ -47,7 +47,7 @@ def test_steps_15_to_18() -> None:
     configuration = synthetic_with()
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
-    for label, count in (("3.1", 6), ("3.2", 1), ("3.3", 3), ("4.1", 2), ("5.1", 3), ("7.2", 10)):
+    for label, count in (("3.1", 6), ("3.2", 1), ("3.3", 3), ("4.1", 3), ("5.1", 3), ("7.2", 10)):
         check(f"{count} checks: {count} ok" in step_section(console, label), f"the checks of step {label} pass")
     check("7 checks:" in step_section(console, "8.5") and "0 failed" in step_section(console, "8.5"),
           "the final validation passes (warnings allowed)")

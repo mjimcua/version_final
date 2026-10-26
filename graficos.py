@@ -344,6 +344,97 @@ def draw_maturation_by_region(table: pd.DataFrame, box, configuration: Config, p
     return save(figure, path, top=0.88)
 
 
+# ─── 04.1 · the maturation curve explained: when the state is set, how it is predicted, how well ───
+def draw_maturation_explained(explained: dict, threshold_pp: float, path: str) -> str:
+    """One row per dated state, three panels: (1) WHEN the final state is set — the distribution f(k) of the months
+    before due, as bars, and the share already visible F(h), as a line, with the month by which half is visible;
+    (2) the pipeline of TODAY — per future month, the share in the state seen now and what the curve adds up to the
+    expected final, next to the tope of the history; (3) HOW WELL — per horizon, the error of the final share in the
+    exam, with the curve and with the states seen then, next to the threshold to use the curve. A state whose curve
+    failed its exam says so in its title. explained: {state: the numbers of maturation_explained (step 4.1)}."""
+    states = list(explained)
+    if not states:
+        return None
+    figure, axes = new_figure(15, 4.6 * len(states), len(states), 3)
+    axes = np.atleast_2d(axes)
+    for row, state in enumerate(states):
+        numbers = explained[state]
+        when, today, exam = numbers["when"], numbers["today"], numbers["exam"]
+        months = len(when) - 1
+
+        # (1) when the state is set
+        axis = axes[row, 0]
+        axis.bar(when["meses_antes"], 100 * when["f"], color=VIOLET, alpha=0.35, width=0.8,
+                 label="f(k): parte del estado final que se puso k meses antes")
+        axis.plot(when["meses_antes"], 100 * when["F"], color=VIOLET, linewidth=2.4, marker="o", markersize=4,
+                  label="F(h): parte del final ya visible h meses antes")
+        half = when[when["F"] >= 0.5]["meses_antes"].max() if (when["F"] >= 0.5).any() else np.nan
+        if np.isfinite(half):
+            axis.axvline(half, color=INK_MUTED, linewidth=1, linestyle=":")
+            axis.annotate(f"la mitad ya se ve\n{int(half)} meses antes", (half, 75), xytext=(-5, 0), textcoords="offset points",
+                          fontsize=8.5, color=INK_SECONDARY, ha="right")
+        axis.set_xticks(range(months + 1))
+        axis.set_xticklabels([f"{k}+" if k == months else str(k) for k in range(months + 1)], fontsize=8)
+        axis.invert_xaxis()
+        axis.set_ylim(0, 135)
+        axis.set_yticks(range(0, 101, 20))
+        axis.set_xlabel("meses antes de vencer", color=INK_SECONDARY)
+        axis.set_ylabel("% del estado final", color=INK_SECONDARY)
+        axis.set_title(f"{state.upper()} · ¿cuándo se pone el estado?\n"
+                       + (f"acaba en él el {100 * numbers['tope']:.1f} % de lo que vence" if numbers["used"]
+                          else "LA CURVA NO SE USA: suspendió su examen"),
+                       fontsize=10, color=INK if numbers["used"] else ORANGE, loc="left")
+        axis.legend(fontsize=7.5, frameon=False, loc="upper left")
+
+        # (2) the pipeline of today: seen now + what the curve adds
+        axis = axes[row, 1]
+        if len(today):
+            labels = [str(month) for month in today["mes"]]
+            positions = np.arange(len(today))
+            axis.bar(positions, 100 * today["visto_hoy"], color=VIOLET, width=0.7, label="visto hoy en la pipeline")
+            axis.bar(positions, 100 * today["anade_la_curva"], bottom=100 * today["visto_hoy"], color=VIOLET, alpha=0.3,
+                     width=0.7, label="lo que añade la curva hasta vencer" if numbers["used"]
+                     else "lo que añadiría la curva (no se usa: el estado toma su cuota histórica)")
+            axis.axhline(100 * numbers["tope"], color=INK_MUTED, linewidth=1.2, linestyle="--",
+                         label=f"tope de los últimos {len(numbers['history_months'])} meses cerrados")
+            axis.set_xticks(positions)
+            axis.set_xticklabels(labels, rotation=60, fontsize=7.5)
+        axis.set_ylabel(f"% de lo que vence, en {state}", color=INK_SECONDARY)
+        axis.set_title("la pipeline de hoy, por mes de vencimiento:\nlo que ya se ve + lo que añade la curva", fontsize=10,
+                       color=INK, loc="left")
+        axis.legend(fontsize=7.5, frameon=False, loc="upper left", ncol=1)
+        top_of_the_bars = float((today["visto_hoy"] + today["anade_la_curva"]).max()) if len(today) else 0.0
+        axis.set_ylim(0, 100 * max(top_of_the_bars, numbers["tope"]) * 1.45 or 1)
+
+        # (3) how well, by how far ahead
+        axis = axes[row, 2]
+        if exam is not None and len(exam):
+            positions = np.arange(len(exam))
+            seen_error = exam["error_vista_abs_pp"] if "error_vista_abs_pp" in exam else exam["error_vista_pp"].abs()
+            for offset, values, colour, label in ((-0.18, exam["error_curva_abs_pp"], VIOLET, "con la curva"),
+                                                  (0.18, seen_error, NEUTRAL_FILL, "sin curva: el estado visto entonces")):
+                bars = axis.bar(positions + offset, values, width=0.36, color=colour, label=label)
+                axis.bar_label(bars, labels=[f"{value:.2f}" for value in values], fontsize=8, color=INK_SECONDARY, padding=2)
+            axis.axhline(threshold_pp, color=ORANGE, linewidth=1, linestyle=":",
+                         label=f"umbral para usar la curva ({threshold_pp:g} pp)")
+            axis.set_ylim(0, max(float(seen_error.max()), float(exam["error_curva_abs_pp"].max()),
+                                 threshold_pp) * 1.35)
+            axis.set_xticks(positions)
+            axis.set_xticklabels([f"{int(h)} {'mes' if int(h) == 1 else 'meses'}" for h in exam["h"]], fontsize=8.5)
+        axis.set_xlabel("antelación de la predicción", color=INK_SECONDARY)
+        axis.set_ylabel("error medio de la cuota final (pp)", color=INK_SECONDARY)
+        axis.set_title("¿cuánto acierta según la antelación?\nerror de la cuota final en el examen (meses cerrados)",
+                       fontsize=10, color=INK, loc="left")
+        axis.legend(fontsize=7.5, frameon=False, loc="upper left")
+    titles(figure, "La curva de maduración de los estados del cliente: cuándo se ponen, cómo se predicen y cuánto aciertan",
+           f"Aprendida de las cohortes {explained[states[0]]['history_months'][0]}..{explained[states[0]]['history_months'][-1]} "
+           f"(ponderadas por unidades). Para un mes "
+           f"futuro, lo esperado al vencer = lo visto hoy + (lo que aún no está en el estado) × p(h), la probabilidad de "
+           f"entrar en él en los h meses que faltan. El supuesto: las cohortes futuras maduran como estas.")
+    figure.subplots_adjust(wspace=0.28, hspace=0.75)
+    return save(figure, path, top=0.90 if len(states) > 1 else 0.84)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # 06-07 · ONE FORECAST SERIES FROM START TO END, AND ITS TECHNIQUES
 # ═══════════════════════════════════════════════════════════════════════════════════

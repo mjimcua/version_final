@@ -29,7 +29,7 @@ import pandas as pd
 from config import (ACTIVE_FLAG_VALUES, CALENDAR_ROLE_COLUMN, Config, DUE_UNITS_AT_DUE_COLUMN, ROLE_PROJECTION, ROLE_TEST,
                     SERIES_ID_COLUMN, UNITS_AT_DUE_COLUMN, UNITS_TODAY_COLUMN, WITH_DATES_COLUMN, join_columns,
                     negative_states, region_columns_of, state_combination)
-from graficos import draw_maturation_by_region
+from graficos import draw_maturation_by_region, draw_maturation_explained
 from maturation import (CELL_LEVEL, GROUP_LEVEL, MaturationCurve, curve_history, examine_the_curve, group_dims,
                         is_in_state, visible_units)
 from time_series_charts import chart_path, draw_without_stopping
@@ -90,7 +90,7 @@ from time_series_charts import chart_path, draw_without_stopping
 #   2. the curve of every dated state and its exam on the exam months
 #   3. the maturation of every state by region (the first region level), as a table and a chart: one line per region
 #   4. what every combination of states renews in the closed months it learns from
-#   5. check the box                                                   checks 1-2
+#   5. check the box                                                   checks 1-3
 #   6. count the checks; stop if any failed
 #
 # THE MATURATION BY REGION (action 3, since 26-oct-2026). For every negative state and every value of the first region
@@ -108,7 +108,9 @@ from time_series_charts import chart_path, draw_without_stopping
 #
 # Checks (logged as they are made, numbered, at the level of their status):
 #    1. the box learns only from closed months up to the last closed one
-#    2. every dated state has a curve learned from cohorts that carry it (WARN: without them its maturation is 0)
+#    2. every dated state's curve beats the states seen then in its exam, by ≤ maturation_curve_max_error_pp (WARN: a curve
+#       that fails is not used, the state takes its historical share: rejected_maturation_dims; since 26-oct-2026)
+#    3. every dated state has a curve learned from cohorts that carry it (WARN: without them its maturation is 0)
 #
 # Output: the box (StateMaturation) for step 7.2 · no table (the maturation of every row is in sff_nucleo, the maturation
 # by month in sff_forecast_maduracion, written by step 7.2).
@@ -120,10 +122,11 @@ STEP_4_1_PURPOSE = ("predict how many units of every future month will carry a n
                 "they fall due: one box that learns from the closed months and that the forecast (step 7.2) and the "
                 "exam (step 7.1) call; here, what it learns and how well its curve did")
 STEP_4_1_ACTIONS = ["the box: the closed months it learns from, the states with a curve and the states with a historical share",
-                "the curve of every dated state and its exam on the exam months",
+                "the curve of every dated state and its exam on the exam months, and the chart that explains it (always shown): "
+                "when the state is set, what the curve adds to today's pipeline, and its error by how far ahead",
                 "the maturation of every state by region (first region level): table and chart, one line per region",
                 "what every combination of states renews in the closed months it learns from",
-                "check the box (checks 1-2)",
+                "check the box (checks 1-3)",
                 "count the checks; stop if any failed"]
 STEP_4_1_OUTPUT = "the box (StateMaturation) for step 7.2; the maturation is shown and written by step 7.2"
 
@@ -135,6 +138,7 @@ MATURATION_EXAM_HORIZONS = (1, 3, 6, 12)         # the horizons the curve is exa
 PORTFOLIO_KEY = "cartera"
 VIEW_PAST, VIEW_TODAY = "pasado", "hoy"          # the past curve (dated states) · the pipeline as seen today
 MATURATION_BY_REGION_CHART = "04_1_maduracion_por_region"
+MATURATION_EXPLAINED_CHART = "04_1_curva_de_maduracion_explicada"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -176,7 +180,7 @@ class StateMaturation:
         self._learn_the_mix()
         # the states whose extract dates them: their final share comes from their curve on the rows with dates
         self.curves = {state: MaturationCurve(self.history, state, configuration)
-                       for state in configuration.maturation_dims if state in self.states}
+                       for state in configuration.maturation_dims_in_use if state in self.states}
 
     def _learn_the_mix(self) -> None:
         """The final mix of the combinations in every calendar month, and the units and renewals of every
@@ -380,6 +384,11 @@ def learn_the_maturation(fine_table: pd.DataFrame, configuration: Config) -> Sta
     box.curve_exams = show_maturation_curves(fine_table, configuration)
     curve_exams = sorted({int(h) for summary in box.curve_exams.values() for h in summary["h"]})
 
+    # the curves that failed their exam are not used: the state takes its historical share (rejected_maturation_dims)
+    for state in configuration.rejected_maturation_dims:
+        box.curves.pop(state, None)
+    show_the_curve_explained(fine_table, box, configuration)
+
     # [3] the maturation of every state by region
     box.maturation_by_region = show_maturation_by_region(fine_table, box, configuration)
 
@@ -394,6 +403,13 @@ def learn_the_maturation(fine_table: pd.DataFrame, configuration: Config) -> Sta
                             last_learned is None or last_learned <= last_closed,
                             failure_detail=f"it learned from {last_learned}, after {last_closed}",
                             context=box.describe())
+    rejected = list(configuration.rejected_maturation_dims)
+    configuration.log_check(STEP_4_1_LABEL, check_log, "every dated state's curve beats the states seen then in its exam "
+                            f"(and misses by ≤ {configuration.maturation_curve_max_error_pp:g} pp)",
+                            not rejected, blocking=False,
+                            failure_detail=f"{rejected}: the curve is not used, they take their historical share",
+                            context=f"{len(configuration.maturation_dims_in_use)} curves used: "
+                                    f"{', '.join(configuration.maturation_dims_in_use) or '—'}")
     without_cohorts = [state for state, curve in box.curves.items()
                        if curve.portfolio_table()["visible_del_final"].isna().all()]
     configuration.log_check(STEP_4_1_LABEL, check_log, "every dated state has a curve learned from cohorts that carry it",
@@ -439,6 +455,7 @@ def show_maturation_curves(fine_table: pd.DataFrame, configuration: Config) -> d
             continue
         summary = exam.groupby("h")[["cuota_final", "cuota_vista_entonces", "cuota_curva", "error_curva_pp", "error_vista_pp"]].mean()
         summary["error_curva_abs_pp"] = exam.assign(_abs=exam["error_curva_pp"].abs()).groupby("h")["_abs"].mean()
+        summary["error_vista_abs_pp"] = exam.assign(_abs=exam["error_vista_pp"].abs()).groupby("h")["_abs"].mean()
         doc(f"[{STEP_4_1_LABEL}] {state}: the exam of the curve in {exam_months[0]}..{exam_months[-1]} (its share of the units due "
             f"predicted with what was seen h months before, against the final one; cuota_vista_entonces: the states seen "
             f"then, with no curve), mean over the exam months:")
@@ -449,6 +466,17 @@ def show_maturation_curves(fine_table: pd.DataFrame, configuration: Config) -> d
         doc(f"[{STEP_4_1_LABEL}] VALORACIÓN {state}: with the curve the share of {state} is missed by at most {worst:.2f} pp "
             f"(mean per horizon); with the states seen then and no curve, by up to {seen_gap:.2f} pp"
             + (": the curve is what the forecast needs" if worst < seen_gap else ": the curve does not beat the states seen; look at it"))
+        # the decision: the curve is used only if its exam beats the states seen then and stays under the threshold
+        curve_error = float(exam["error_curva_pp"].abs().mean())
+        seen_error = float(exam["error_vista_pp"].abs().mean())
+        passes = curve_error < seen_error and curve_error <= configuration.maturation_curve_max_error_pp
+        summary.attrs.update(curve_error=curve_error, seen_error=seen_error, passes=passes)
+        exams_of_states[state].attrs.update(curve_error=curve_error, seen_error=seen_error, passes=passes)
+        if not passes:
+            configuration.rejected_maturation_dims.append(state)
+            doc(f"[{STEP_4_1_LABEL}] DECISIÓN {state}: su curva NO se usa (error medio {curve_error:.2f} pp, frente a "
+                f"{seen_error:.2f} pp con los estados vistos y un máximo de {configuration.maturation_curve_max_error_pp:g} pp): "
+                f"toma su cuota histórica, como un estado sin fechas, en el forecast y en el examen honesto")
     doc(f"[{STEP_4_1_LABEL}] ══════════ FIN DE LA MADURACIÓN DE LOS ESTADOS DEL CLIENTE ══════════")
     return exams_of_states
 
@@ -557,6 +585,64 @@ def show_maturation_by_region(fine_table: pd.DataFrame, box: StateMaturation, co
     if drawn:
         configuration.show_figure(STEP_4_1_LABEL, f"the maturation of every state by {region_column}", drawn)
     return table
+
+
+def maturation_explained(box, fine_table: pd.DataFrame, state: str, configuration: Config) -> dict:
+    """The numbers of the explanation of the curve of one dated state, from the cohorts the box learns from
+    (box.history: the last maturation_history_months closed months) and the pipeline of today:
+
+      when      per k (months before due, 12 = "12 or more"): f(k) = Σ units that took the state k months before / Σ
+                units in the state at the end — the distribution of WHEN the final state is set; F(h) = Σ f(k ≥ h), the
+                share of the final state already visible h months before due; the tope π = Σ units in the state / Σ due
+      today     per future month (h = months after the last closed one): the share in the state seen today, and what
+                the curve adds, (1 − seen) × p(h), up to the expected final share
+      exam      per h: the mean |error| of the final share in the exam of step 4.1, with the curve and with the states
+                seen then (no curve)"""
+    months = int(configuration.maturation_months)
+    units_column, period = configuration.pipeline_units_col, configuration.period_col
+    history = box.history
+    in_state = is_in_state(history, state)
+    columns = configuration.maturation_columns_of(state)
+    entered = history.loc[in_state, columns].fillna(0.0).sum().to_numpy(dtype=float)
+    units_in_state = float(history.loc[in_state, units_column].sum())
+    units_due = float(history[units_column].sum())
+    distribution = entered / units_in_state if units_in_state > 0 else np.zeros(months + 1)
+    visible = np.cumsum(distribution[::-1])[::-1]                    # F(h) = Σ f(k ≥ h)
+    when = pd.DataFrame({"meses_antes": np.arange(months + 1), "f": distribution, "F": visible})
+    tope = units_in_state / units_due if units_due > 0 else np.nan
+
+    curve = MaturationCurve(history, state, configuration).portfolio_table().set_index("meses_antes")["p_tomar_estado"]
+    future = fine_table[(fine_table[CALENDAR_ROLE_COLUMN] == "proyeccion") & (fine_table[units_column] > 0)]
+    months_ahead = future[period].map(lambda month: (month - box.as_of).n)
+    future = future[(months_ahead >= 1) & (months_ahead <= months)]
+    months_ahead = months_ahead[future.index].to_numpy(dtype=int)
+    seen_units = visible_units(future, state, months_ahead, configuration)
+    by_month = (pd.DataFrame({"mes": future[period].to_numpy(), "h": months_ahead,
+                              "vencen": future[units_column].to_numpy(dtype=float), "vistas": seen_units})
+                .groupby(["mes", "h"])[["vencen", "vistas"]].sum().reset_index())
+    by_month["visto_hoy"] = by_month["vistas"] / by_month["vencen"]
+    by_month["p"] = by_month["h"].map(curve).fillna(0.0)
+    by_month["anade_la_curva"] = (1 - by_month["visto_hoy"]) * by_month["p"]
+
+    exam = getattr(box, "curve_exams", {}).get(state)
+    return dict(when=when, tope=tope, today=by_month, exam=exam,
+                used=state in getattr(box, "curves", {}), history_months=box.history_months)
+
+
+def show_the_curve_explained(fine_table: pd.DataFrame, box: StateMaturation, configuration: Config) -> None:
+    """The chart that explains the curve, always shown (it is how the forecast is told): per dated state, the
+    distribution of WHEN the final state is set, what the curve adds to the pipeline of today, and its error by horizon."""
+    if box.identity or box.history.empty or not box.curve_exams:
+        return
+    explained = {state: maturation_explained(box, fine_table, state, configuration)
+                 for state in configuration.maturation_dims if state in box.curve_exams}
+    path = chart_path(configuration, MATURATION_EXPLAINED_CHART)
+    drawn = draw_without_stopping(lambda: draw_maturation_explained(explained, configuration.maturation_curve_max_error_pp,
+                                                                    path),
+                                  STEP_4_1_LABEL, configuration)
+    if drawn:
+        configuration.show_figure(STEP_4_1_LABEL, "la curva de maduración explicada (cuándo, hoy, cuánto acierta)", drawn,
+                                  always=True)
 
 
 def show_what_every_combination_renews(box: StateMaturation, configuration: Config) -> None:
@@ -749,7 +835,8 @@ def honest_total_exam(framework_rows: pd.DataFrame, fine_table: pd.DataFrame, co
              is still the ceiling). Every series renews at the rate the framework predicted for it; a series with no
              prediction (a twin that had no units) at the rate of its combination in the closed months the box knows."""
     period = configuration.period_col
-    dated = [state for state in configuration.maturation_dims if state in fine_table.columns and state in negative_states(configuration)]
+    dated = [state for state in configuration.maturation_dims_in_use
+             if state in fine_table.columns and state in negative_states(configuration)]
     dims = [column for column in configuration.rate_series_columns if column in fine_table.columns]
     attributes = fine_table.drop_duplicates(SERIES_ID_COLUMN).set_index(SERIES_ID_COLUMN)[dims]
     timing_columns = [column for state in dated for column in configuration.maturation_columns_of(state)]

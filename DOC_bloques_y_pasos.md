@@ -459,14 +459,15 @@ Predice cuántas unidades de cada mes futuro llevarán un estado negativo (softc
 - **Depende de:** 1.4, y de las columnas de maduración (`<estado>_month_k`) que valida la 1.2.
 - **Acciones:**
   1. Construye la caja: los meses cerrados de los que aprende, los estados con curva (fechados) y los que usan la proporción histórica.
-  2. Calcula la curva de cada estado fechado y su examen en los meses de examen.
+  2. Calcula la curva de cada estado fechado y su examen en los meses de examen. Decide si la curva se usa. Dibuja el gráfico que explica la curva (04\_1\_curva\_de\_maduracion\_explicada), que se ve siempre, también con la consola en silencio. Tiene una fila por estado y tres paneles: cuándo se pone el estado (la distribución f(k) de los meses antes de vencer y la parte ya visible F(h)); la pipeline de hoy (lo visto más lo que añade la curva, frente al tope histórico); y el error de la cuota final según la antelación, con curva y sin ella, frente al umbral. Los números salen de maturation\_explained.
   3. Muestra la maduración de cada estado por región del primer nivel (tr\_regional\_level\_1): una tabla por estado y el gráfico 04\_1\_maduracion\_por\_region, una línea por región. softcancel, con fechas: la curva del pasado, media de las cohortes cerradas. dormant y not\_installed, sin fechas: la pipeline vista hoy sobre la cuota final de la región.
   4. Muestra lo que renueva cada combinación de estados en los meses de los que aprende.
   5. Comprueba la caja.
   6. Cuenta las comprobaciones y para si alguna falla.
-- **Comprobaciones (2):**
+- **Comprobaciones (3):**
   1. La caja aprende solo de meses cerrados, hasta el último.
-  2. Todo estado fechado tiene una curva aprendida de cohortes que lo llevan (aviso: si no, su maduración es 0).
+  2. La curva de cada estado fechado falla su cuota final menos que el estado visto entonces, y por menos de maturation\_curve\_max\_error\_pp (5 pp). Aviso: si no, la curva no se usa y el estado toma su cuota histórica en el forecast y en el examen honesto (desde el 26-oct: la curva de dormant del dato real fallaba 70 pp y restaba un 17,6 % a 2026).
+  3. Todo estado fechado tiene una curva aprendida de cohortes que lo llevan (aviso: si no, su maduración es 0).
 
 ## Bloque 5 · Pipeline futura (paso 5.1)
 

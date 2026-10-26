@@ -543,7 +543,10 @@ def verdict_of_states(tables: dict, configuration: Config) -> list:
                                 "error de la cuota del estado en el examen (pp, el peor horizonte): con la curva vs con el estado visto entonces",
                                 f"{worst:.2f} pp vs {seen:.2f} pp", "menor con la curva",
                                 VERDICT_HOLDS if worst < seen else VERDICT_FAILS,
-                                "el efecto en dinero lo dice el examen honesto del 7.1 (veredicto del bloque 7)"))
+                                ("NO se usa: toma su cuota histórica (error mayor que con el estado visto, o por encima de "
+                                 f"{configuration.maturation_curve_max_error_pp:g} pp); "
+                                 if state in configuration.rejected_maturation_dims else "")
+                                + "el efecto en dinero lo dice el examen honesto del 7.1 (veredicto del bloque 7)"))
     dated = set(getattr(box, "curve_exams", {}))
     for state in box.states:
         if state not in dated:
