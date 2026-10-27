@@ -8,6 +8,11 @@ main.py — Runs SFF on the production extract, or on the synthetic raw.
 
 The Config is declared here and only here: its columns, its calendar and where the raw
 comes from. Each step adds one line to run().
+
+WHAT IS PRIVATE TO THIS MACHINE lives in entorno_local.py, next to this file and never in the zip of the project:
+the SQL server, the database, the driver, the schema, the query of the raw (and optionally the login, the table prefix
+and the current month). A new main.py does not touch it. The first time: copy entorno_local_ejemplo.py to
+entorno_local.py and fill it in. Only production reads it: the synthetics run without it.
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -16,18 +21,18 @@ import sys
 
 import pandas as pd
 from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 
 from pipeline import Orchestrator
 from config import Config
 
 
 # ─── named constants ─────────────────────────────────────────────────────────────
-SQL_SERVER = "..."                          # [por completar]
-SQL_DATABASE = "..."                        # [por completar]
-SQL_DRIVER = "ODBC Driver 17 for SQL Server"
+LOCAL_ENVIRONMENT_MODULE = "entorno_local"        # the private settings of this machine (entorno_local.py)
+LOCAL_ENVIRONMENT_REQUIRED = ["SQL_SERVER", "SQL_DATABASE", "SQL_DRIVER", "SQL_SCHEMA", "RAW_EXTRACT_QUERY"]
 PRODUCTION_OUTPUT_FOLDER = "salida"
 PRODUCTION_LOG_FILE = os.path.join(PRODUCTION_OUTPUT_FOLDER, "sff_ejecucion.log")
-RAW_EXTRACT_QUERY = "SELECT * FROM ..."     # [por completar] the query of the raw extract
+PRODUCTION_CURRENT_MONTH = "01/10/2026"          # entorno_local.CURRENT_MONTH, when it is there, replaces it
 SYNTHETIC_KEYWORD = "sintetico"
 SYNTHETIC_OUTPUT_FOLDER = "salida"
 SYNTHETIC_DATABASE = os.path.join(SYNTHETIC_OUTPUT_FOLDER, "sff_sintetico.db")
@@ -41,12 +46,35 @@ LIKE_REAL_SEED = 11
 # THE TWO CONFIGS
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def production_engine():
-    """The production SQL Server: the raw is read from it and the tables are written to it.
-    fast_executemany: pyodbc sends every chunk of to_sql in one round trip (without it, one
-    INSERT per row: a table of a million rows takes minutes instead of seconds)."""
-    connection_url = (f"mssql+pyodbc://@{SQL_SERVER}/{SQL_DATABASE}"
-                      f"?driver={SQL_DRIVER.replace(' ', '+')}&trusted_connection=yes")
+def local_environment():
+    """The private settings of this machine: the module entorno_local.py next to main.py (copied from
+    entorno_local_ejemplo.py and filled in once). It stops with what to do when it is missing or incomplete."""
+    try:
+        import entorno_local
+    except ModuleNotFoundError as error:
+        if error.name != LOCAL_ENVIRONMENT_MODULE:
+            raise
+        raise FileNotFoundError(f"falta {LOCAL_ENVIRONMENT_MODULE}.py junto a main.py ({os.path.dirname(os.path.abspath(__file__))}): "
+                                f"copia entorno_local_ejemplo.py como {LOCAL_ENVIRONMENT_MODULE}.py y rellena el servidor, "
+                                f"la base, el schema y la query del extracto") from None
+    missing = [name for name in LOCAL_ENVIRONMENT_REQUIRED
+               if not str(getattr(entorno_local, name, "") or "").strip() or "..." in str(getattr(entorno_local, name))]
+    if missing:
+        raise ValueError(f"{LOCAL_ENVIRONMENT_MODULE}.py ({entorno_local.__file__}) no tiene rellenos: {', '.join(missing)}")
+    return entorno_local
+
+
+def production_engine(environment=None):
+    """The production SQL Server: the raw is read from it and the tables are written to it. Windows authentication
+    unless entorno_local gives SQL_USER and SQL_PASSWORD. fast_executemany: pyodbc sends every chunk of to_sql in one
+    round trip (without it, one INSERT per row: a table of a million rows takes minutes instead of seconds)."""
+    environment = environment or local_environment()
+    user, password = getattr(environment, "SQL_USER", None), getattr(environment, "SQL_PASSWORD", None)
+    query = {"driver": environment.SQL_DRIVER}
+    if not user:
+        query["trusted_connection"] = "yes"
+    connection_url = URL.create("mssql+pyodbc", username=user or None, password=password or None,
+                                host=environment.SQL_SERVER, database=environment.SQL_DATABASE, query=query)
     return create_engine(connection_url, fast_executemany=True)
 
 
@@ -72,18 +100,20 @@ def production_configuration() -> Config:
     choices as like_real_configuration, which reproduces it. Names marked [por confirmar] must be checked
     against the extract: step 1.1 names every column that is missing or has no role, and stops."""
     os.makedirs(PRODUCTION_OUTPUT_FOLDER, exist_ok=True)          # the log file, the report and the charts go there
+    environment = local_environment()                             # entorno_local.py: what is private to this machine
     return ProductionConfig(
-        # where the raw is read from and the tables are written to
-        sql_engine=production_engine(),
+        # where the raw is read from and the tables are written to (entorno_local.py)
+        sql_engine=production_engine(environment),
+        sql_schema=environment.SQL_SCHEMA,
+        table_prefix=getattr(environment, "TABLE_PREFIX", None) or "sff_",
+        raw_extract_sql=environment.RAW_EXTRACT_QUERY,
         # the log: every line and every table to the file; the console (the notebook) only warnings, failures and
         # the final table. A full run with the real extract is ~2,000 lines and ~100 tables: rendered in the browser,
         # it ran out of memory (26-oct-2026). console_log_level=None shows everything again
         log_file=PRODUCTION_LOG_FILE,
         console_log_level="WARNING",
-        sql_schema="dbo",
-        raw_extract_sql=RAW_EXTRACT_QUERY,
-        # the calendar
-        current_month="01/10/2026",          # October open: uplift window 2025-10..2026-09, exam 2026-04..2026-09
+        # the calendar (entorno_local.CURRENT_MONTH, when it is there, so a new main.py does not move it)
+        current_month=getattr(environment, "CURRENT_MONTH", None) or PRODUCTION_CURRENT_MONTH,
         test_months=6,                       # 6 exam months, as in the run of 19-oct: with 3, no gain can be significant
         # the dimensions
         business_mandatory_dims=["tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3",

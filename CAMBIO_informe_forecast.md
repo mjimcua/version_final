@@ -120,3 +120,20 @@ Son datos sintéticos: **la decisión se toma con la ejecución real.** Con 6 me
 - cada nivel tiene sus meses y los meses sumados;
 - las dos tablas están en la base;
 - salen el factor k y la regla aprendida.
+
+## 7 · Lo privado de tu máquina, fuera de main.py: `entorno_local.py` (añadido el 26-oct-2026)
+
+El servidor, la base, el driver, el schema y la query del extracto ya no están en `main.py`. Están en `entorno_local.py`, junto a `main.py`. Ese fichero solo existe en tu máquina y no viaja en el zip, así que puedes sobrescribir `main.py` con cada versión sin volver a rellenar esas líneas.
+
+La primera vez:
+1. copia `entorno_local_ejemplo.py` como `entorno_local.py`;
+2. rellena `SQL_SERVER`, `SQL_DATABASE`, `SQL_DRIVER`, `SQL_SCHEMA` y `RAW_EXTRACT_QUERY`.
+
+Opcionales:
+- `SQL_USER` / `SQL_PASSWORD`: sin ellos, autenticación de Windows. La contraseña, mejor desde una variable de entorno.
+- `TABLE_PREFIX`.
+- `CURRENT_MONTH`: así el mes en curso tampoco depende de `main.py`.
+
+Lo leen todos los que usan `production_configuration()`: `python main.py`, `ejecutar_informe.py`, `informe_forecast.py` y el explorador. Los sintéticos no lo necesitan.
+
+Si falta el fichero, o tiene campos sin rellenar, `production_configuration()` se para y dice cuál.

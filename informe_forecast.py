@@ -1696,14 +1696,15 @@ def report(configuration: Config, which: list = None, acquisition_plan_units: Op
 
 if __name__ == "__main__":
     # python informe_forecast.py [sintetico | parecido [YYYY-MM]] [numero …]
-    from main import LIKE_REAL_KEYWORD, SYNTHETIC_KEYWORD, like_real_configuration, production_configuration, synthetic_configuration
+    # only the Config asked for is imported: a main.py with production_configuration alone is enough for production
+    import main
     arguments = sys.argv[1:]
     numbers = [argument for argument in arguments if argument[:1].isdigit() and "." in argument]
     months = [argument for argument in arguments if argument[:1].isdigit() and "-" in argument]
-    if SYNTHETIC_KEYWORD in arguments:
-        run_configuration = synthetic_configuration()
-    elif LIKE_REAL_KEYWORD in arguments:
-        run_configuration = like_real_configuration(*months[:1])
+    if "sintetico" in arguments:
+        run_configuration = main.synthetic_configuration()
+    elif "parecido" in arguments:
+        run_configuration = main.like_real_configuration(*months[:1])
     else:
-        run_configuration = production_configuration()
+        run_configuration = main.production_configuration()
     report(run_configuration, numbers or None)
