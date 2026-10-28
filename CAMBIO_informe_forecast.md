@@ -137,3 +137,104 @@ Opcionales:
 Lo leen todos los que usan `production_configuration()`: `python main.py`, `ejecutar_informe.py`, `informe_forecast.py` y el explorador. Los sintéticos no lo necesitan.
 
 Si falta el fichero, o tiene campos sin rellenar, `production_configuration()` se para y dice cuál.
+
+## 8 · La pipeline auditada por componentes: capítulo 7 (añadido el 28-oct-2026)
+
+**El porqué.** En la ejecución real, la pipeline del año que viene sale más pequeña que la de este año. Para saber si es lo que dice el pasado o si una componente rompe la línea, cada componente se dibuja mes a mes desde el primer mes del extracto hasta diciembre del año que viene, con el pasado real como referencia. Una componente que sube o baja de golpe justo donde acaba el dato real es la que hay que auditar. No vuelve a ejecutar el framework: lee las tablas de la última ejecución.
+
+**Las componentes de la pipeline** (lo que vence en un mes, en USD):
+
+| Componente | De dónde sale |
+|---|---|
+| renovaciones de 1 año (extracto) | filas del extracto, plazo de 1 año, que no son adquisición |
+| licencias de 2 y 3 años (extracto) | filas del extracto con plazo de varios años |
+| adquisiciones de 1 año (extracto) | filas del extracto de 1 año con `net_new` de adquisición |
+| renovaciones proyectadas (7.2) | lo que se espera que renueve de la pipeline de 1 año que vence del mes en curso a diciembre |
+| adquisición simulada (5.1) | la adquisición de 1 año de la ventana, hasta el objetivo |
+| reentrada del retail to subscription (6.1) | la pipeline que crea el universo time series |
+| borrada por el 1.3 (fuera del total) | la pipeline de 1 año a medio construir que el calendario borra y las dos anteriores sustituyen |
+
+La pipeline del pasado que viene de retail to subscription todavía no se distingue en el extracto: va dentro de las renovaciones. Está anotada como mejora pendiente (quizá una columna nueva).
+
+**Las cuatro preguntas.** Las preguntas están en español y los gráficos de este capítulo en inglés. Cada gráfico lleva debajo su anexo con los números de lo que dibuja; el anexo también se escribe como `<número>_anexo_*.csv` y se imprime en pantalla.
+
+- **7.1 · ¿De qué se compone la pipeline mes a mes, del pasado real al año que viene?**
+  - Las componentes apiladas mes a mes, con la banda gris del forecast.
+  - Debajo, el total frente al mismo mes del año anterior: azul lo real, naranja lo previsto.
+  - El anexo da la pipeline por año y componente, con la variación de los dos últimos años. El subtítulo compara la tendencia real con el año que viene («Real trend 2023→2026: −5,0 %/year · 2027 vs 2026: −2,7 %»).
+  - Un gráfico más por región, cada una en su escala.
+- **7.2 · ¿Cuánta pipeline tiene cada región este año y el que viene, y cuánto es simulado?**
+  - Barras del año anterior, el actual y el siguiente por región, con las componentes apiladas.
+  - Anexo por región: el total de cada año y su variación; lo construido por el framework (proyectadas + adquisición simulada + retail to subscription) en dólares y en %; la adquisición (extracto + simulada) y el retail to subscription.
+  - Otro anexo igual por subregión.
+- **7.3 · ¿Lo renovado vuelve como pipeline 12 meses después?**
+  - La pipeline de renovación de 1 año de cada mes frente a lo renovado de 1 año 12 meses antes (real en los meses cerrados, esperado en el futuro), y su cociente.
+  - Las proyectadas vuelven exactamente a lo que renuevan (cociente 1). Si el cociente real es mayor que 1, hay pipeline que la proyección no construye; si es menor, construye de más.
+  - En el parecido al real, el cociente real es 0,956 (de 0,939 a 0,975).
+- **7.4 · ¿Es estable el uplift de cada componente, con y sin subidas de precio?**
+  - El uplift mes a mes de cada componente (USD renovado / USD que vencía de lo que renovó): real en los meses cerrados, el que aplica el forecast en el futuro.
+  - Dos paneles: con todas las filas y sin las filas que caen dentro del ciclo de una subida de precio. Una fila está dentro de una subida cuando su grupo de precio (`price_group_dims`) y su mes caen en el ciclo (`price_cycle_months`) de una subida de `sff_price_increase_calendar`.
+  - El anexo da el uplift por año de cada componente, con y sin subidas, y la parte de la base que cae dentro de una subida.
+
+**Lo que ya enseña el parecido al real** (son datos sintéticos; lo que vale es la ejecución real):
+
+- La pipeline de 2027 (32,1 M$) baja un 2,7 % frente a 2026, menos de lo que baja la tendencia real (−5 %/año). No hay ruptura.
+- El 22 % de 2027 lo construye el framework.
+- Las renovaciones proyectadas renuevan en 2027 con un uplift de 1,033, frente al 1,11 del resto de renovaciones de 1 año. Vencen con descuento 0, así que toman el uplift estadístico de la celda de descuento 0 (1,005 en las celdas propias, 1,13 donde caen a la celda mandatory). Esto no cambia la pipeline de 2027, pero sí lo que renueva en octubre–diciembre de 2027. Hay que mirarlo con los datos reales.
+
+**Cómo se ejecuta:**
+- `python ejecutar_informe.py` con `PREGUNTAS = ["7.1", "7.2", "7.3", "7.4"]`, o
+- `report(configuracion, ["7.1", "7.2", "7.3", "7.4"])` desde Jupyter.
+
+**Test:** en `test_informe_forecast.py`, bloque F, 4 comprobaciones:
+- las componentes suman el total de cada mes y cada año es la pipeline del núcleo;
+- 7.2 coincide con 7.1;
+- en los meses que construye, lo proyectado es lo renovado 12 meses antes;
+- el uplift del total está entre los de sus componentes.
+
+## 9 · Entender el año que viene frente al equipo de retención: capítulo 8 (añadido el 28-oct-2026)
+
+**El porqué.** El forecast de 2027 del equipo de retención (133.851 miles de USD) parece razonable, y nuestra línea base sale bastante más baja. La pipeline de 2026 está bien construida, así que el capítulo busca dónde está la diferencia y qué palanca la explica. No toca el framework: lee las tablas de la última ejecución.
+
+**El retail to subscription está dentro.** Nuestro 2027 de 8.1 es el total de `sff_resumen_negocio` con todos los conceptos:
+- las renovaciones de la pipeline del extracto, de las renovaciones proyectadas y de la adquisición simulada;
+- el retail to subscription: su ingreso simulado (`ts_simulado`) y la renovación de su reentrada (`ts_reentrada`).
+
+El test lo comprueba: los conceptos suman el total, y el total es el de `sff_resumen_negocio`. El gráfico 8.1b compara ese total con la referencia por región del equipo, con los conceptos apilados (la referencia no viene desglosada), y lo anexa por concepto.
+
+**La referencia.** `forecast_retencion_2027.csv`, junto a `main.py`: una fila por subregión (`tr_regional_level_3`), en miles de USD, con la región del equipo.
+- La línea LATAM del equipo (21.824) incluía Canadá; el fichero solo tiene las subregiones.
+- Se compara con nuestras renovaciones más el retail to subscription: se toma la referencia como el ingreso total del año. Si el equipo de retención no cuenta el retail to subscription, la columna Δ R2S dice cuánto hay que restar.
+
+**El dinero de cada fila**, igual en todas las preguntas:
+- renovado = pipeline × tasa en USD × uplift;
+- tasa en USD = USD que vencía de lo que renueva / USD que vence;
+- uplift = USD renovado / USD que vencía de lo que renueva;
+- real en los meses cerrados, previsto en el futuro.
+
+**Las siete preguntas** (en español; los gráficos, en inglés, cada uno con su anexo debajo, en CSV y en pantalla):
+
+| | Pregunta | Qué enseña |
+|---|---|---|
+| 8.1 | ¿Dónde están las mayores diferencias con el forecast del equipo de retención? | El puente de nuestro 2026 a nuestro 2027, un factor cada vez (pipeline, tasa, uplift, R2S), hasta la referencia. El hueco de cada subregión, ordenado de mayor a menor falta. Anexos por región del equipo y por subregión con la tasa y el uplift que haría falta para llegar a la referencia con nuestra pipeline |
+| 8.2 | ¿Son parecidas las tasas de renovación de un año a otro? | Una línea por año (2023–2027) mes a mes, en unidades y en USD, en total y por región |
+| 8.3 | ¿Se está acabando el efecto de las subidas de precio en la revalorización? | El uplift de cada año con todas las filas y sin las que caen en el ciclo de una subida (`sff_price_increase_calendar`). El anexo da la parte de la base dentro de una subida y el dinero que añaden las subidas cada año (lo que renovaron las filas de dentro menos lo que renovarían al uplift sin subidas), por región y subregión |
+| 8.4 | ¿Cómo evolucionan las combinaciones de referencia de precio? | Subregión × producto × plazo × banda, la forma en que se hacen las subidas: uplift, USD que vence por unidad y USD pagado por unidad renovada, mes a mes, con los meses dentro de una subida en naranja. Sigue las de `REFERENCE_PRICE_CELLS` (de partida DACH · premium · 1 year · 10, buscando el texto sin distinguir mayúsculas) más las 8 mayores del año en curso |
+| 8.5 | ¿Es distinta la composición de la pipeline del año que viene? | Para cada dimensión (tipo de renovación, producto, plazo, banda, partner, estados, `net_new` y componente de la pipeline): la parte de la pipeline y el rendimiento (renovado / pipeline) de cada valor en los dos años. El cambio del dinero se parte en volumen, mezcla (la composición nueva a los rendimientos de este año) y rendimiento; las tres partes suman el cambio |
+| 8.6 | ¿Maduran bien los estados del cliente? | Para dormant, softcancel y no instalado, la parte de las unidades que vencen en ese estado: final en los meses cerrados, hoy y al vencer en el futuro. Dice qué estados tienen curva de maduración con fecha (en producción, solo softcancel; los otros van a su parte histórica). El anexo da la tasa del estado, la neutra y las unidades que cuesta un punto más de estado |
+| 8.7 | ¿Se queda corto el horizonte de más de un año? | La tasa prevista de cada mes futuro según los meses de antelación (h hasta 15–16), frente a la última tasa real del mismo mes. Las barras de la diferencia muestran si la técnica deriva con el horizonte. Anexo: el examen de la cartera por horizonte (sesgo y error) |
+
+**Lo que ya enseña el parecido al real** (sintético: la escala no se compara con la referencia, y 6 subregiones de la referencia no existen en él):
+- de 2026 a 2027 el uplift pasa de 1,148 a 1,114 (−720 k$), la tasa sube (+469 k$) y la pipeline baja (−651 k$);
+- Europa pierde uplift (1,169 → 1,122; DACH 1,159 → 1,106) y Russia++ también (1,150 → 1,103). Es justo el patrón de «se acaba el efecto de las subidas» que hay que confirmar con los datos reales en 8.3 y 8.4;
+- en 8.6, dormant y no instalado, sin curva con fecha, van a su parte histórica. No instalado queda algo por encima del pasado (3,4 % frente a 3,2 %).
+
+**Cómo se ejecuta:**
+- `python ejecutar_informe.py` con `PREGUNTAS = ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7"]`, o
+- `report(configuracion, ["8.1", …], retention_reference_file=…)` para otra referencia.
+
+**Test:** en `test_informe_forecast.py`, bloque G, 4 comprobaciones:
+- renovado = pipeline × tasa × uplift, y el puente suma;
+- volumen + mezcla + rendimiento es el cambio de cada dimensión;
+- las tasas están entre 0 y 1;
+- cada mes futuro tiene su horizonte.

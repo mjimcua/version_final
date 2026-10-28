@@ -10,6 +10,11 @@ C · the band that can be broken down: between the rows all independent and the 
 D · what was built: the pipeline of next year is its four origins, and what replaces the wiped pipeline is not less
 E · the real bands (chapter 6): the error of every level is the sum of its series, the rules keep their order, the
     tables are written to the database and the learned correlation is between 0 and 1
+F · the pipeline audited by its components (chapter 7): the components add up to the pipeline of the core, by month
+    and by year; the projected renewals come back at what they renew; the uplift of the total is between the
+    uplifts of its components
+G · understanding next year (chapter 8): renewed = pipeline × rate × uplift; the bridge from this year to the next
+    adds up; volume + mix + performance is the change of every dimension; the rates are rates
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -21,7 +26,8 @@ import tempfile
 import numpy as np
 import pandas as pd
 
-from informe_forecast import BAND_RULES, QUESTIONS, calibration_factors, report
+from informe_forecast import (BAND_RULES, COMPONENTS, CONCEPTS, QUESTIONS, UPLIFT_COMPONENTS, bridge_of, calibration_factors,
+                              mix_split, report)
 from main import run
 from report_queries import year_by_region_query
 from test_helpers import check, finish, synthetic_with
@@ -145,6 +151,67 @@ def test_the_real_bands(configuration, answers) -> None:
           f"{learned.min():.2f}..{learned.max():.2f})")
 
 
+def test_the_components(configuration, answers) -> None:
+    print("F · the pipeline audited by its components")
+    monthly = answers["7.1"].table.query("orden_total == 1")
+    parts = monthly[[f"{component}_usd" for component in COMPONENTS]].sum(axis=1)
+    core = pd.read_sql("SELECT forecast_year, SUM(forecast_to_renew_USD) AS usd FROM sff_nucleo "
+                       "WHERE forecast_pipeline_source NOT IN ('hueco', 'ts_sin_resultado') "
+                       "AND forecast_universe = 'pipeline' OR forecast_pipeline_source = 'ts_reentrada' "
+                       "GROUP BY forecast_year", configuration.sql_engine).set_index("forecast_year")["usd"]
+    by_year = monthly.groupby("anio")["total_usd"].sum()
+    check(np.allclose(parts, monthly["total_usd"]) and np.allclose(by_year.to_numpy(), core.reindex(by_year.index).to_numpy()),
+          f"7.1: the components add up to the total of every month, and every year is the pipeline of the core "
+          f"(${by_year.sum():,.0f})")
+    yearly = answers["7.2"].table.query("orden_total == 1").set_index("anio")["total_usd"]
+    check(np.allclose(yearly.to_numpy(), by_year.reindex(yearly.index).to_numpy()) and len(yearly) == 3,
+          "7.2: the last year, the current one and the next one, the same as the months of 7.1")
+    chain = answers["7.3"].table.query("orden_total == 1")
+    projected_months = chain[chain["projected_renewal_usd"] > 0]
+    check(len(projected_months) > 0 and np.allclose(projected_months["projected_renewal_usd"] + projected_months["renewal_1y_usd"],
+                                                    projected_months["renovado_12m_antes_usd"], rtol=0.02),
+          f"7.3: in the months it builds, the projected renewal is what renewed 12 months before "
+          f"({len(projected_months)} months)")
+    uplift = answers["7.4"].table.query("orden_total == 1")
+    components = uplift[[f"{component}_uplift" for component in UPLIFT_COMPONENTS]]
+    inside = ((uplift["total_uplift"] >= components.min(axis=1) - 1e-9)
+              & (uplift["total_uplift"] <= components.max(axis=1) + 1e-9))
+    check(inside[uplift["total_uplift"].notna()].all() and uplift["total_uplift"].notna().sum() > 0,
+          "7.4: the uplift of the total of every month is between the uplifts of its components")
+
+
+def test_next_year(configuration, answers) -> None:
+    print("G · understanding next year")
+    current_year = configuration.calendar_boundaries()["current"].year
+    years = answers["8.1"].table.query("orden_total == 1").set_index("anio")
+    now, upcoming = years.loc[current_year], years.loc[current_year + 1]
+    identity = np.isclose(upcoming["pipeline_usd"] * upcoming["tasa_usd"] * upcoming["uplift"], upcoming["renovado_usd"])
+    bridge = bridge_of(dict(now), dict(upcoming))
+    adds_up = np.isclose(now["total_usd"] + sum(bridge.values()), upcoming["total_usd"])
+    check(identity and adds_up,
+          f"8.1: renewed = pipeline × rate × uplift, and {current_year} + Δ pipeline + Δ rate + Δ uplift + Δ R2S = "
+          f"{current_year + 1} (${now['total_usd']:,.0f} → ${upcoming['total_usd']:,.0f})")
+    concepts_add_up = np.isclose(sum(upcoming[concept] for concept in CONCEPTS), upcoming["total_usd"])
+    summary = pd.read_sql("SELECT ano, total_usd FROM sff_resumen_negocio", configuration.sql_engine).set_index("ano")["total_usd"]
+    check(concepts_add_up and np.isclose(upcoming["total_usd"], summary.loc[current_year + 1]) and upcoming["r2s_usd"] > 0,
+          f"8.1: next year is every concept, retail to subscription included (${upcoming['r2s_usd']:,.0f}): the total of "
+          f"sff_resumen_negocio (${summary.loc[current_year + 1]:,.0f})")
+    rates = answers["8.2"].table
+    check(rates["tasa_unidades"].dropna().between(0, 1).all() and rates["tasa_usd"].dropna().between(0, 1).all()
+          and len(rates) > 0, "8.2: the rates in units and in USD of every month are between 0 and 1")
+    composition = answers["8.5"].table
+    changes_ok = []
+    for dimension, block in composition.groupby("dimension"):
+        _, split = mix_split(block, current_year, current_year + 1)
+        by_year = block.groupby("anio")["renovado_usd"].sum()
+        changes_ok.append(np.isclose(sum(split.values()), by_year[current_year + 1] - by_year[current_year]))
+    check(all(changes_ok) and len(changes_ok) > 2,
+          f"8.5: volume + mix + performance is the change of the renewed money in every dimension ({len(changes_ok)} dimensions)")
+    horizon = answers["8.7"].table
+    check(horizon["meses_vista"].dropna().min() >= 1 and len(answers["8.7"].charts) == 1,
+          f"8.7: every future month has its months ahead (up to h = {int(horizon['meses_vista'].max())})")
+
+
 if __name__ == "__main__":
     run_configuration, run_answers = the_run()
     test_every_question_answers(run_configuration, run_answers)
@@ -152,4 +219,6 @@ if __name__ == "__main__":
     test_the_band(run_configuration, run_answers)
     test_what_was_built(run_configuration, run_answers)
     test_the_real_bands(run_configuration, run_answers)
+    test_the_components(run_configuration, run_answers)
+    test_next_year(run_configuration, run_answers)
     finish()

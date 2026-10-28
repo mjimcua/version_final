@@ -10,7 +10,8 @@ salida/informe/. Las preguntas 6.1 y 6.2 escriben además sff_bandas_reales y sf
 """
 
 # ─── lo que se puede cambiar ─────────────────────────────────────────────────────
-PREGUNTAS = []                 # [] = todas; o algunas, por ejemplo ["6.1", "6.2"] o ["3.1", "4.1", "4.3"]
+PREGUNTAS = []                 # [] = todas; o algunas, por ejemplo ["7.1", "7.2", "7.3", "7.4"] (la pipeline por componentes)
+                               # o ["8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7"] (entender 2027 frente al equipo de retención)
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import os
