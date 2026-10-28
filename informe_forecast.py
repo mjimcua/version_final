@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import inspect
 
-from config import (TABLE_CORE, TABLE_FORECAST_MATURATION, TABLE_MATURATION_CURVE, Config, running_in_notebook,
+from config import (TABLE_BUSINESS_SUMMARY, TABLE_CORE, TABLE_FORECAST_MATURATION, TABLE_MATURATION_CURVE, Config, running_in_notebook,
                     write_frame_to_sql)
 from graficos import (AQUA, BLUE, INK, INK_MUTED, INK_SECONDARY, NEUTRAL_FILL, ORANGE, VIOLET, money_label,
                       new_figure, save, titles)
@@ -3290,12 +3290,44 @@ def answer(question: Question, context: ReportContext, draw: bool = True) -> Ans
     return result
 
 
+def show_what_the_core_has(context: ReportContext) -> None:
+    """Before the questions: the money of the core by year and universe, so a missing universe (no retail to
+    subscription rows, a run that did not finish) is seen at once, not inferred from a total that comes out low."""
+    summary = pd.read_sql(f"""SELECT forecast_year AS anio, forecast_universe AS universo, COUNT(*) AS filas,
+       SUM(COALESCE(forecast_to_renew_USD, 0)) AS pipeline_usd, SUM(COALESCE(forecast_renewed_USD, 0)) AS renovado_usd
+FROM {context.core}
+WHERE forecast_year BETWEEN {context.current_year - 1} AND {context.next_year}
+GROUP BY forecast_year, forecast_universe
+ORDER BY forecast_year, forecast_universe""", context.engine)
+    print(f"[informe] lo que trae {context.core} (mes en curso {context.current_month}):")
+    for _, row in summary.iterrows():
+        print(f"[informe]    {int(row['anio'])} · {row['universo']:<12} {int(row['filas']):>10,} filas · "
+              f"pipeline {money_label(row['pipeline_usd'])} · renovado / ingresos {money_label(row['renovado_usd'])}")
+    if context.has_table(TABLE_BUSINESS_SUMMARY):     # the same money as step 7.2 wrote it: they must agree
+        business = pd.read_sql(f"SELECT ano, total_usd FROM {table_in_sql(context.configuration, TABLE_BUSINESS_SUMMARY)}",
+                               context.engine).set_index("ano")["total_usd"]
+        core_by_year = summary.groupby("anio")["renovado_usd"].sum()
+        for year, core_total in core_by_year.items():
+            written = float(business.get(year, np.nan))
+            agree = np.isfinite(written) and abs(core_total - written) <= 1e-6 * max(1.0, abs(written))
+            print(f"[informe]    {int(year)} · núcleo {money_label(core_total)} · sff_resumen_negocio {money_label(written)}"
+                  + ("" if agree else "  ← NO COINCIDEN: el núcleo y el resumen no son de la misma ejecución"))
+    else:
+        print(f"[informe] AVISO: {context.configuration.table_prefix}{TABLE_BUSINESS_SUMMARY} no está en este schema: la "
+              f"ejecución no llegó a escribir el paso 7.2, o lo escribió en otro schema o con otro prefijo. El núcleo "
+              f"puede ser de otra ejecución o haber quedado a medias: vuelve a ejecutar el framework y mira el final del log.")
+    if "time_series" not in set(summary["universo"]):
+        print("[informe] AVISO: el núcleo no tiene filas time_series (retail to subscription): las preguntas del año "
+              "salen sin él. Mira el paso 6.1 en el log de la ejecución.")
+
+
 def report(configuration: Config, which: list = None, acquisition_plan_units: Optional[float] = None,
            show: bool = True, retention_reference_file: Optional[str] = None) -> dict:
     """Every question of the story (or those of which), in order: {number: Answer}. In a notebook the charts are shown.
     retention_reference_file: the retention team's forecast of next year for 8.1 (None = forecast_retencion_2027.csv)."""
     context = ReportContext(configuration, acquisition_plan_units=acquisition_plan_units,
                             retention_reference_file=retention_reference_file)
+    show_what_the_core_has(context)
     answers = {}
     for question in QUESTIONS:
         if which and question.number not in which:
