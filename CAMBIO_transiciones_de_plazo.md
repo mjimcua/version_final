@@ -30,7 +30,7 @@ Son medidas de mes cerrado, como las de las renovaciones aisladas: vacía en un 
 
 Se declaran las seis o ninguna; la Config se para si falta alguna o si no hay `term_column`. El plazo de origen es el de la fila (`tr_term`).
 
-**En `main.py`:** `TERM_TRANSITION_COLUMNS_IN_EXTRACT = True` cuando el extracto las traiga. Hasta entonces todo funciona como antes.
+**En `main.py`:** `TERM_TRANSITION_COLUMNS_IN_EXTRACT = True`, activado desde el extracto del 28-oct-2026, que ya las trae. Con un extracto sin ellas se vuelve a poner `False` y todo funciona como antes. Ese extracto trae también `dormant_month_0` … `dormant_month_12`, las columnas de maduración de dormant. Por eso dormant pasa a ser un estado con fecha: `maturation_dims=["softcancel", "dormant"]`. Su curva tiene que aprobar el examen del paso 4.1; si no, dormant toma su proporción histórica, como hasta ahora.
 
 ## La regla (el supuesto del forecast)
 

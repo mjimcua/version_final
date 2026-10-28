@@ -40,7 +40,7 @@ ACQUISITION_TARGETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__
 # the term transitions of a renewal (28-oct-2026): True once the extract brings the six columns
 # total_renewed_units_to_1y … total_renewed_usd_to_3y (of the renewed units and USD of a row, those that renewed to a
 # licence of 1, 2 or 3 years). Step 7.2 then projects the renewals of the window by the share of every destination
-TERM_TRANSITION_COLUMNS_IN_EXTRACT = False
+TERM_TRANSITION_COLUMNS_IN_EXTRACT = True
 TERM_TRANSITION_COLUMNS = dict(renewed_units_to_1y_col="total_renewed_units_to_1y",
                                renewed_units_to_2y_col="total_renewed_units_to_2y",
                                renewed_units_to_3y_col="total_renewed_units_to_3y",
@@ -143,8 +143,9 @@ def production_configuration() -> Config:
         structural_timevarying_dims={"dormant": "negative", "softcancel": "negative",
                                      "not_installed": "negative"},            # [por confirmar] the signs
         # the states whose extract says WHEN they were set (<state>_month_0 … <state>_month_12, the units in the state k months
-        # before due): the extract carries softcancel's since 21-oct-2026; step 1.1 fails if they are missing
-        maturation_dims=["softcancel"],
+        # before due): the extract carries softcancel's since 21-oct-2026 and dormant's since 28-oct-2026; step 1.1 fails
+        # if they are missing. Every curve passes its exam in step 4.1 or the state takes its historical share
+        maturation_dims=["softcancel", "dormant"],
         extra_renovacion=["net_new", "prev_OperationGroup"],
         # no extra_revalorizacion: the 19-oct extract carries no price_cap / msrp_increased (the increases are detected in 3.1)   [por confirmar]
         # the discount: ONE column, both sides (the bucket is derived with the default edges,

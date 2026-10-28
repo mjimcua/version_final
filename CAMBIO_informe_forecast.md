@@ -278,3 +278,70 @@ Por región y subregión, la tabla da:
 
 - **8.9 · ¿Dónde se han detectado subidas de precio y desde cuándo?** El detector del paso 8.4 para cada grupo de precio con alguna subida: la revalorización de las renovaciones aisladas frente a la media de sus 12 meses anteriores, con los 12 meses de cada subida en naranja, su inicio y su escalón. El anexo trae todas las subidas de `sff_price_increase_calendar` con sus fechas, para comparar con las subidas de tarifa que se hicieron.
 - **8.10 · ¿A qué plazo renuevan las licencias?** Con las seis columnas de las transiciones de plazo (`CAMBIO_transiciones_de_plazo.md`): por plazo de origen, la parte de cada destino mes a mes, su revalorización y su USD por año. Sin las columnas, la pregunta dice que no se puede responder.
+
+## 13 · Monográficos: capítulo 9 (añadido el 28-oct-2026)
+
+Un monográfico responde una pregunta de negocio. Primero va la respuesta, en texto: se imprime y se guarda en `<número>_respuesta.md`. Después van los gráficos, de lo general al detalle, cada uno con su anexo. Es el formato de las preguntas que irán a la etapa de análisis del plan (`PLAN_etapas.md`).
+
+### 9.1 · ¿Cuánto cambia el año que viene por la adquisición de este año?
+
+**Por qué importa.** La adquisición se vende con descuento. En su primera renovación renueva con una tasa más baja que la retención, pero con más revalorización, porque el que renueva paga el precio completo. Por eso la pipeline que deja la adquisición de un año pesa en el renovado del siguiente de forma distinta a como pesa su USD. Si este año se adquiere menos, o se adquiere más a 2 y 3 años (que no vencen el año que viene), el año que viene tiene menos de esa pipeline, y la tasa no lo enseña.
+
+**Las dos pipelines de cada año** (licencias de 1 año; filas reales, esperadas, proyectadas y simuladas):
+
+| Pipeline | Qué filas entran |
+|---|---|
+| adquisición | `acquisition_column` en `acquisition_values`, más la adquisición simulada del paso 5.1 |
+| retención | el resto, incluidas las renovaciones proyectadas del paso 7.2 |
+
+Las licencias de varios años van aparte. El retail to subscription no entra en ninguna de las dos.
+
+**El dinero:** renovado = unidades × USD por unidad × tasa (USD) × uplift.
+- El USD por unidad es el precio de venta: con el descuento, en la adquisición.
+- tasa = base / pipeline; uplift = renovado / base.
+
+**Las respuestas**
+
+- **Prima frente a la retención (cada año):** el renovado de la adquisición menos lo que renovaría su pipeline a la rentabilidad de la retención (renovado / pipeline). Se reparte en dos partes:
+  - **hueco de tasa** = pipeline × (tasa adq − tasa ret) × uplift ret. Suele ser negativo: renueva menos.
+  - **prima de revalorización** = pipeline × tasa adq × (uplift adq − uplift ret). Suele ser positiva: paga más.
+- **Puente año en curso → año que viene,** un factor cada vez, con las condiciones primero y el volumen al final:
+
+  | Efecto | Cálculo |
+  |---|---|
+  | precio de venta | U₀ × (p₁ − p₀) × r₀ × u₀ |
+  | tasa | U₀ × p₁ × (r₁ − r₀) × u₀ |
+  | revalorización | U₀ × p₁ × r₁ × (u₁ − u₀) |
+  | volumen | (U₁ − U₀) × p₁ × r₁ × u₁ |
+
+  Los cuatro suman el cambio. El efecto volumen es el contrafactual: si se hubieran adquirido las unidades del año anterior, en las condiciones del año que viene, el año que viene renovaría −volumen más.
+- **En dólares:** la diferencia de pipeline de adquisición × lo que renueva cada dólar el año que viene, y aparte el cambio de lo que renueva cada dólar.
+- **Ventas de adquisición por plazo,** de enero al último mes cerrado de cada año, para que los años se puedan comparar. Una adquisición de t años vendida en el mes m es la fila de adquisición de plazo t que vence en m + 12t, como la lee el paso 5.1. Un plazo cuyo vencimiento el extracto todavía no alcanza sale como «not visible yet».
+- **AVISO** cuando la adquisición simulada renueva con un uplift que se aleja un 5 % o más del de la adquisición del extracto. La simulada se vende con `acquisition_discount`, y si ese descuento no es el real, su revalorización tampoco lo es. El anexo trae el descuento real ponderado por USD de cada año.
+
+**Los gráficos**
+
+| Gráfico | Qué enseña |
+|---|---|
+| 9.1 | la prima frente a la retención por año, el puente al año que viene y el anexo de cada año (unidades, USD, precio de venta, descuento, tasas, uplift, precio renovado, rentabilidad y lo mismo de la retención) |
+| 9.1a | el puente por región |
+| 9.1b | el renovado y el uplift de la adquisición mes a mes por año, y el anexo de ventas por plazo |
+
+**SQL:**
+- `9_1_adquisicion_en_la_renovacion.sql`: pipeline, base y renovado mes a mes por origen y plazo, con lo simulado y el descuento aparte;
+- `9_1_ventas_por_plazo.sql`: las filas de adquisición por mes de vencimiento y plazo.
+
+**En el sintético parecido al real (mes en curso 2026-10):**
+- La primera renovación de la adquisición renueva $3,5M en 2026 y $3,4M en 2027 (−$98k).
+  - Volumen: −$386k. Las unidades bajan un 10 %: lo vendido a 1 año de enero a septiembre baja un 7 %.
+  - Precio de venta, tasa y uplift: +$108k, +$104k y +$77k.
+- **Aviso:** en 2027 la adquisición simulada renueva con uplift 1,277 y la del extracto con 1,123. El descuento de la simulada es el 40 % y el real de la adquisición, el 33 %. Hay que mirarlo con datos reales, porque decide cuánto revaloriza la adquisición de octubre a diciembre.
+
+**Arreglado de paso:** con valores numéricos de `acquisition_column` (el `newcust = 1` del sintético), la columna se compara como número. Un núcleo que la guarda como texto puede tener «1.0» y «1» a la vez, y antes solo se reconocía una de las dos. Con valores de texto, como `net_new` en producción, no cambia nada.
+
+**Comprobado:** `test_informe_forecast.py`, bloque H (5 comprobaciones).
+- Adquisición + retención = la pipeline y el renovado del núcleo de cada año.
+- Prima = hueco de tasa + prima de revalorización.
+- El puente suma el cambio, y el volumen es el contrafactual.
+- Un ejemplo a mano.
+- Se escriben la respuesta, los tres gráficos y la SQL de ventas.

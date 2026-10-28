@@ -12,6 +12,7 @@ salida/informe/. Las preguntas 6.1 y 6.2 escriben además sff_bandas_reales y sf
 # ─── lo que se puede cambiar ─────────────────────────────────────────────────────
 PREGUNTAS = []                 # [] = todas; o algunas, por ejemplo ["7.1", "7.2", "7.3", "7.4"] (la pipeline por componentes)
                                # o ["8.1", …, "8.10"] (entender 2027; 8.9 las subidas de precio detectadas, 8.10 las transiciones de plazo)
+                               # o ["9.1"] (monográfico: cuánto cambia 2027 por la adquisición de 2026)
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
 import os

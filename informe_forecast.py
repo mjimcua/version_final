@@ -20,6 +20,9 @@ THE STORY (the chapters, in the order it is told):
   8  next year             where our next year differs from the retention team's forecast and why: the rates, the
                            uplift and the end of the price increases, the price reference combinations, the
                            composition of the pipeline, the maturation of the states and the horizon
+  9  monographs           one business question each: the answer first (in text, <number>_respuesta.md), then the
+                           charts from the general to the detail. 9.1: how much next year changes because of the
+                           acquisition of this year (the first renewal: volume, price at sale, rate and uplift)
 
 GROUPING: by region (the first and the last level of region_columns_of, tr_regional_level_1 and tr_regional_level_3 in
 production) with the subtotal of every first-level region (its finer level = 'TOTAL') and the TOTAL, as the final
@@ -59,6 +62,7 @@ from config import (CORE_RENEWED_UNITS_TO_PREFIX, CORE_RENEWED_USD_TO_PREFIX, TE
 from graficos import (AQUA, BLUE, INK, INK_MUTED, INK_SECONDARY, NEUTRAL_FILL, ORANGE, VIOLET, money_label,
                       new_figure, save, titles)
 from report_queries import table_in_sql, year_by_region_columns
+from term_transitions import term_years
 
 # ─── named constants ─────────────────────────────────────────────────────────────
 REPORT_FOLDER = "informe"
@@ -122,7 +126,12 @@ class ReportContext:
         if not configuration.acquisition_column or not configuration.acquisition_values:
             return "1 = 0"
         values = ", ".join(sql_literal(value) for value in configuration.acquisition_values)
-        condition = f"{prefix}{configuration.acquisition_column} IN ({values})"
+        column = f"{prefix}{configuration.acquisition_column}"
+        numeric = all(isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)
+                      for value in configuration.acquisition_values)
+        if numeric:            # a core with the column as text can hold '1.0' and 1 at once: compared as numbers
+            column = f"CAST({column} AS FLOAT)"
+        condition = f"{column} IN ({values})"
         if configuration.term_column:
             condition += f" AND {prefix}{configuration.term_column} = {sql_literal(configuration.one_year_term_value)}"
         return condition
@@ -1669,7 +1678,17 @@ def is_acquisition(context: ReportContext, alias: str = "n") -> str:
             or configuration.acquisition_column not in context.core_columns):
         return "1 = 0"
     values = ", ".join(sql_literal(value) for value in configuration.acquisition_values)
-    return f"{alias}.{configuration.acquisition_column} IN ({values})"
+    return f"{acquisition_column_as_written(context, alias)} IN ({values})"
+
+
+def acquisition_column_as_written(context: ReportContext, alias: str = "n") -> str:
+    """The acquisition column as the values of the Config compare with it. With numeric values (newcust = 1) the
+    column is read as a number: a core written with the column as text can hold '1.0' and 1 at once."""
+    configuration = context.configuration
+    column = f"{alias}.{configuration.acquisition_column}"
+    numeric = all(isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)
+                  for value in configuration.acquisition_values)
+    return f"CAST({column} AS FLOAT)" if numeric else column
 
 
 def pipeline_component(context: ReportContext, alias: str = "n") -> str:
@@ -3663,6 +3682,519 @@ def draw_8_10(table, context, number):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
+# CHAPTER 9 · MONOGRAPHS: ONE BUSINESS QUESTION, ITS ANSWER FIRST, THEN ITS DETAIL (added 28-oct-2026)
+# ═══════════════════════════════════════════════════════════════════════════════════
+# A monograph answers one question of the business. First the answer, in a few lines of text (printed and written as
+# <number>_respuesta.md), then the charts that explain it, from the general to the detail, every one with its annex.
+#
+# 9.1 · HOW MUCH DOES NEXT YEAR CHANGE BECAUSE OF THE ACQUISITION OF THIS YEAR?
+# An acquisition is sold with a big discount. When it renews for the first time (12 months later, for a 1-year
+# licence) it renews at a lower rate than a retention, but at a much higher uplift: the one that renews pays the full
+# price. So the pipeline that comes from the acquisitions of a year weighs on the renewed money of the next one, and
+# not in proportion to its USD: its volume, the price it was sold at (the discount), its rate and its uplift all count.
+# If this year acquires less (or more in 2- and 3-year licences, which do not fall due next year), next year has less
+# of that pipeline, and the renewal rate does not show it.
+#
+# THE TWO PIPELINES OF EVERY YEAR (the rows of the pipeline: real, expected, projected and simulated):
+#   acquisition   the first renewal of what was acquired: acquisition_column in acquisition_values, and the
+#                 acquisitions simulated by step 5.1 (they fall due 12 months after the simulation window)
+#   retention     the rest: licences that had already renewed, and the renewals projected by step 7.2
+# The 1-year licences are the answer; the multi-year ones are in the annex (an acquisition of 2 years falls due 24
+# months after its sale). The retail to subscription re-entry is not in either: it is its own universe (6.1).
+#
+# THE MONEY, as in chapter 8: renewed = units due × USD due per unit × rate (USD) × uplift
+#   USD due per unit   the price it was sold at (for an acquisition, with its discount)
+#   rate (USD)         base / pipeline: the USD due of what renews over the USD due
+#   uplift             renewed / base: what the one that renews pays over what it was paying
+#
+# THE ANSWERS:
+#   the premium over retention (every year): the renewed money of the acquisition − its pipeline × the yield of the
+#   retention (yield = renewed / pipeline). It splits in two:
+#       rate gap         pipeline × (rate acq − rate ret) × uplift ret      (negative when it renews less)
+#       uplift premium   pipeline × rate acq × (uplift acq − uplift ret)     (positive when it pays more)
+#   the bridge of the renewed money of the acquisition, current year → next year, one factor at a time, the
+#   conditions first and the volume last:
+#       price at sale    U now × (p next − p now) × r now × u now
+#       rate             U now × p next × (r next − r now) × u now
+#       uplift           U now × p next × r next × (u next − u now)
+#       volume           (U next − U now) × p next × r next × u next
+#   The four add up to renewed next − renewed now, and the volume effect is the counterfactual: had the year that
+#   feeds next year acquired the units of the one before, at its own conditions, next year would renew −volume more.
+#   The sales of acquisition by term, January to the last closed month of every year: an acquisition of t years sold
+#   in month m is the acquisition row of term t due in m + 12 t (as step 5.1 reads them). A term whose due months the
+#   extract does not reach yet is not visible.
+MONOGRAPH_YEARS_BACK = 3                    # 9.1: the years before the current one that are drawn
+ORIGIN_ACQUISITION = "acquisition"
+ORIGIN_RETENTION = "retention"
+TERM_ONE_YEAR = "1y"
+TERM_MULTI_YEAR = "multi_year"
+FACTOR_SUMS = ["pipeline_usd", "base_usd", "renovado_usd", "vencen_unidades", "renovadas_unidades", "simulado_usd",
+               "simulado_base_usd", "simulado_renovado_usd", "descuento_por_usd", "descuento_peso_usd",
+               "simulado_descuento_por_usd", "simulado_descuento_peso_usd"]
+SIMULATED_UPLIFT_WARNING = 0.05            # 9.1: the simulated acquisition renews at an uplift 5 % or more away from the
+                                           # acquisition of the extract: a warning (its discount is not the real one?)
+BRIDGE_EFFECTS = {"price_at_sale": ("price at sale (USD per unit due)", VIOLET), "rate": ("rate", ORANGE),
+                  "uplift": ("uplift", AQUA), "volume": ("volume (units due)", BLUE)}
+BRIDGE_SHORT_NAMES = {"price_at_sale": "price at sale", "rate": "rate effect", "uplift": "uplift effect",
+                      "volume": "volume"}                 # the headers of the annex by region
+
+
+def acquisition_or_retention(context: ReportContext, alias: str = "n") -> str:
+    """The origin of a pipeline row: the first renewal of an acquisition, or a retention."""
+    return f"""CASE
+           WHEN {alias}.forecast_pipeline_source = 'pipeline_simulada' THEN '{ORIGIN_ACQUISITION}'
+           WHEN {alias}.forecast_pipeline_source = 'pipeline_proyectada' THEN '{ORIGIN_RETENTION}'
+           WHEN {is_acquisition(context, alias)} THEN '{ORIGIN_ACQUISITION}'
+           ELSE '{ORIGIN_RETENTION}'
+       END"""
+
+
+def sql_9_1(context: ReportContext) -> Optional[str]:
+    """9.1 · the pipeline, base and renewed money of every month by origin (acquisition or retention) and term, from
+    MONOGRAPH_YEARS_BACK years before the current one to next December."""
+    if is_acquisition(context) == "1 = 0":          # no acquisition column in this run: nothing to tell apart
+        return None
+    period = context.configuration.period_col
+    first_year = context.current_year - MONOGRAPH_YEARS_BACK
+    discount_column = context.configuration.discount_value_column
+    # the discount it was sold with, weighted by the USD due of the rows that carry it (a row of the maturation of a
+    # state carries part of the USD due, but no discount: it is left out of the weight). 0 without a discount column
+    with_discount = discount_column and discount_column in context.core_columns
+    discount_times_usd = (f"COALESCE(n.{discount_column} * n.forecast_to_renew_USD, 0)" if with_discount else "0")
+    discount_weight = (f"CASE WHEN n.{discount_column} IS NULL THEN 0 ELSE COALESCE(n.forecast_to_renew_USD, 0) END"
+                       if with_discount else "0")
+    base = f"""SELECT {level_columns(context)}, n.forecast_year AS anio, n.{period} AS periodo,
+       {acquisition_or_retention(context)} AS origen,
+       CASE WHEN {is_one_year_term(context)} THEN '{TERM_ONE_YEAR}' ELSE '{TERM_MULTI_YEAR}' END AS plazo,
+       {money_columns(context)},
+       CASE WHEN n.forecast_pipeline_source = 'pipeline_simulada' THEN {due_usd()} ELSE 0 END AS simulado_usd,
+       CASE WHEN n.forecast_pipeline_source = 'pipeline_simulada' THEN {renewal_base_usd(context)} ELSE 0 END AS simulado_base_usd,
+       CASE WHEN n.forecast_pipeline_source = 'pipeline_simulada' THEN COALESCE(n.forecast_renewed_USD, 0) ELSE 0 END AS simulado_renovado_usd,
+       {discount_times_usd} AS descuento_por_usd, {discount_weight} AS descuento_peso_usd,
+       CASE WHEN n.forecast_pipeline_source = 'pipeline_simulada' THEN {discount_times_usd} ELSE 0 END AS simulado_descuento_por_usd,
+       CASE WHEN n.forecast_pipeline_source = 'pipeline_simulada' THEN {discount_weight} ELSE 0 END AS simulado_descuento_peso_usd
+FROM {context.core} n
+WHERE {in_pipeline_sources()}
+  AND n.forecast_year BETWEEN {first_year} AND {context.next_year}"""
+    measures = MONEY_MEASURES + ["SUM(simulado_usd) AS simulado_usd", "SUM(simulado_base_usd) AS simulado_base_usd",
+                                 "SUM(simulado_renovado_usd) AS simulado_renovado_usd",
+                                 "SUM(descuento_por_usd) AS descuento_por_usd", "SUM(descuento_peso_usd) AS descuento_peso_usd",
+                                 "SUM(simulado_descuento_por_usd) AS simulado_descuento_por_usd",
+                                 "SUM(simulado_descuento_peso_usd) AS simulado_descuento_peso_usd"]
+    return with_subtotals(context, base, measures, ["anio", "periodo", "origen", "plazo"],
+                          comment="9.1 · la primera renovación de la adquisición frente a la retención: pipeline, base y "
+                                  f"renovado mes a mes, de {first_year} a {context.next_year}")
+
+
+def sql_9_1_sales(context: ReportContext) -> str:
+    """9.1 · the rows of acquisition of the extract by due month and term: every one is a sale of its due month − 12 ×
+    its term in years (the sale month is computed in Python from the term written as text)."""
+    configuration = context.configuration
+    period = configuration.period_col
+    levels = level_columns(context)
+    term = configuration.term_column if configuration.term_column in context.core_columns else None
+    term_select = f"n.{term}" if term else f"{sql_literal(configuration.one_year_term_value)}"
+    term_group = f", n.{term}" if term else ""
+    return f"""-- 9.1 · las ventas de adquisición: cada fila de adquisición del extracto es una venta de su mes − 12 × su plazo
+SELECT {levels}, n.{period} AS periodo, {term_select} AS plazo,
+       SUM(COALESCE(n.s1_1_vencen_unidades, 0)) AS vendidas_unidades,
+       SUM(COALESCE(n.s1_1_vencen_usd, 0)) AS vendido_usd
+FROM {context.core} n
+WHERE n.origen_fila = 'raw' AND {is_acquisition(context)}
+GROUP BY {levels}, n.{period}{term_group}
+ORDER BY {levels}, n.{period}{term_group};"""
+
+
+def money_factors(sums) -> dict:
+    """The factors of renewed = units × USD per unit × rate × uplift, from the sums of a block of rows."""
+    units, pipeline = float(sums["vencen_unidades"]), float(sums["pipeline_usd"])
+    base, renewed = float(sums["base_usd"]), float(sums["renovado_usd"])
+    return {"units": units, "pipeline": pipeline, "base": base, "renewed": renewed,
+            "renewed_units": float(sums["renovadas_unidades"]), "simulated": float(sums.get("simulado_usd", 0.0)),
+            "simulated_uplift": safe_ratio(float(sums.get("simulado_renovado_usd", 0.0)), float(sums.get("simulado_base_usd", 0.0))),
+            "extract_uplift": safe_ratio(renewed - float(sums.get("simulado_renovado_usd", 0.0)),
+                                         base - float(sums.get("simulado_base_usd", 0.0))),
+            "discount": safe_ratio(float(sums.get("descuento_por_usd", 0.0)), float(sums.get("descuento_peso_usd", 0.0))),
+            "simulated_discount": safe_ratio(float(sums.get("simulado_descuento_por_usd", 0.0)),
+                                             float(sums.get("simulado_descuento_peso_usd", 0.0))),
+            "extract_discount": safe_ratio(float(sums.get("descuento_por_usd", 0.0)) - float(sums.get("simulado_descuento_por_usd", 0.0)),
+                                           float(sums.get("descuento_peso_usd", 0.0)) - float(sums.get("simulado_descuento_peso_usd", 0.0))),
+            "price": safe_ratio(pipeline, units), "rate": safe_ratio(base, pipeline), "uplift": safe_ratio(renewed, base),
+            "rate_units": safe_ratio(float(sums["renovadas_unidades"]), units),
+            "yield": safe_ratio(renewed, pipeline),
+            "renewed_price": safe_ratio(renewed, float(sums["renovadas_unidades"]))}
+
+
+def premium_over_retention(acquisition: dict, retention: dict) -> dict:
+    """What the acquisition renews over what the same pipeline would renew at the yield of the retention, split into
+    the rate gap and the uplift premium (they add up to the premium)."""
+    pipeline = acquisition["pipeline"]
+    rate_gap = pipeline * (acquisition["rate"] - retention["rate"]) * retention["uplift"]
+    uplift_premium = pipeline * acquisition["rate"] * (acquisition["uplift"] - retention["uplift"])
+    at_retention_yield = pipeline * retention["rate"] * retention["uplift"]
+    if not all(np.isfinite(value) for value in (rate_gap, uplift_premium, at_retention_yield)):
+        return {"at_retention_yield": np.nan, "rate_gap": np.nan, "uplift_premium": np.nan, "premium": np.nan}
+    return {"at_retention_yield": at_retention_yield, "rate_gap": rate_gap, "uplift_premium": uplift_premium,
+            "premium": acquisition["renewed"] - at_retention_yield}
+
+
+def acquisition_bridge(now: dict, upcoming: dict) -> dict:
+    """The change of the renewed money from one year to the next, one factor at a time: price at sale, rate and uplift
+    at the volume of now, then the volume at the conditions of next (so the volume effect is the counterfactual).
+    Without the four factors in both years, the whole change goes to the volume."""
+    factors = ("units", "price", "rate", "uplift")
+    change = upcoming["renewed"] - now["renewed"]
+    if not all(np.isfinite(year[factor]) for year in (now, upcoming) for factor in factors):
+        return {"price_at_sale": 0.0, "rate": 0.0, "uplift": 0.0, "volume": change}
+    units_now, price_now, rate_now, uplift_now = (now[factor] for factor in factors)
+    units_next, price_next, rate_next, uplift_next = (upcoming[factor] for factor in factors)
+    return {"price_at_sale": units_now * (price_next - price_now) * rate_now * uplift_now,
+            "rate": units_now * price_next * (rate_next - rate_now) * uplift_now,
+            "uplift": units_now * price_next * rate_next * (uplift_next - uplift_now),
+            "volume": (units_next - units_now) * price_next * rate_next * uplift_next}
+
+
+def factors_by_year(rows: pd.DataFrame, origin: str, term: str = TERM_ONE_YEAR) -> dict:
+    """{year: money_factors} of the rows of one origin and term."""
+    chosen = rows[(rows["origen"] == origin) & (rows["plazo"] == term)]
+    sums = chosen.groupby("anio")[FACTOR_SUMS].sum()
+    return {int(year): money_factors(row) for year, row in sums.iterrows()}
+
+
+def acquisition_sales_by_term(context: ReportContext) -> tuple:
+    """The sales of acquisition of every year by term, January to the last closed month (the same months every year,
+    so the years compare), in units and USD; and whether every term of every year is visible in the extract.
+    Returns (the table: year × term, the SQL that reads it)."""
+    sql = sql_9_1_sales(context)
+    rows = pd.read_sql(sql, context.engine)
+    if rows.empty:
+        return pd.DataFrame(), sql
+    rows["_due"] = pd.PeriodIndex(rows["periodo"].astype(str), freq="M")
+    years_of_term = term_years(rows["plazo"]).fillna(1).astype(int)
+    rows["anos_plazo"] = years_of_term
+    rows["_sale"] = [due - 12 * years for due, years in zip(rows["_due"], years_of_term)]
+    last_due = rows["_due"].max()
+    current = pd.Period(context.current_month, freq="M")
+    months_to_date = current.month - 1 if current.month > 1 else 12      # January: the whole previous year
+    last_year = context.current_year if current.month > 1 else context.current_year - 1
+    years = list(range(context.current_year - MONOGRAPH_YEARS_BACK, last_year + 1))
+    lines = []
+    for year in years:
+        for term_years_value in sorted(rows["anos_plazo"].unique()):
+            of_year = rows[(rows["anos_plazo"] == term_years_value)
+                           & rows["_sale"].map(lambda sale: sale.year == year and sale.month <= months_to_date)]
+            last_sale = pd.Period(f"{year}-{months_to_date:02d}", freq="M")
+            visible = last_sale + 12 * term_years_value <= last_due
+            lines.append({"anio_venta": year, "plazo_anos": int(term_years_value), "visible": visible,
+                          "vendidas_unidades": float(of_year["vendidas_unidades"].sum()) if visible else np.nan,
+                          "vendido_usd": float(of_year["vendido_usd"].sum()) if visible else np.nan})
+    table = pd.DataFrame(lines)
+    table.attrs["months_to_date"] = months_to_date
+    return table, sql
+
+
+def bridge_waterfall(axis, start_label: str, start: float, effects: dict, end_label: str, end: float) -> None:
+    """From the renewed money of one year to the next: the start, every effect on top of the previous ones, the end."""
+    labels = [start_label]
+    axis.bar(0, start, color=INK_MUTED, width=0.6)
+    axis.annotate(money_label(start), (0, start), ha="center", va="bottom", fontsize=8.5, color=INK)
+    running = start
+    levels = [start, end]                       # every height the bars reach: the axis keeps room for their labels
+    for position, (effect, value) in enumerate(effects.items(), start=1):
+        levels.append(running + value)
+        label, colour = BRIDGE_EFFECTS[effect]
+        axis.bar(position, value, bottom=running, color=colour, width=0.6)
+        axis.annotate(money_label(value), (position, max(running, running + value)), ha="center", va="bottom",
+                      fontsize=8.5, color=INK_SECONDARY)
+        running += value
+        labels.append(label)
+    axis.bar(len(effects) + 1, end, color=INK, width=0.6)
+    axis.annotate(money_label(end), (len(effects) + 1, end), ha="center", va="bottom", fontsize=8.5, color=INK)
+    labels.append(end_label)
+    axis.set_xticks(range(len(labels)))
+    axis.set_xticklabels(labels, fontsize=8)
+    money_axis(axis)
+    highest, lowest = max(levels), min(levels)
+    if lowest > 0:                              # all above zero: start the axis near the lowest bar, not at zero
+        bottom = lowest - 0.6 * (highest - lowest) if highest > lowest else 0.85 * lowest
+        bottom = max(0.0, bottom)
+        axis.set_ylim(bottom=bottom, top=highest + 0.1 * (highest - bottom))
+
+
+def year_label(year: int, context: ReportContext) -> str:
+    if year == context.next_year:
+        return f"{year}\n(forecast)"
+    if year == context.current_year:
+        return f"{year}\n(partly forecast)"
+    return str(year)
+
+
+def unit_price_text(value: float) -> str:
+    return f"${value:,.2f}" if np.isfinite(value) else "—"
+
+
+def growth_text(new: float, old: float) -> str:
+    return f"{100 * (new / old - 1):+.1f} %" if np.isfinite(old) and old and np.isfinite(new) else "—"
+
+
+def acquisition_answer(context: ReportContext, acquisition: dict, retention: dict, bridge: dict,
+                       sales: pd.DataFrame) -> list:
+    """The answer of 9.1 in a few lines, in Spanish, for the business: what changes, why, against the retention, and
+    the sales of this year by term."""
+    now, upcoming = context.current_year, context.next_year
+    acquisition_now, acquisition_next = acquisition.get(now), acquisition.get(upcoming)
+    if acquisition_now is None or acquisition_next is None:
+        return [f"Sin pipeline de adquisición a 1 año en {now} o {upcoming}: no hay respuesta."]
+    change = acquisition_next["renewed"] - acquisition_now["renewed"]
+    renewed_one_year = {year: acquisition[year]["renewed"] + retention[year]["renewed"]
+                        for year in (now, upcoming) if year in retention}
+    lines = [f"PREGUNTA: ¿Cuánto cambia {upcoming} por la adquisición de {now}?", "",
+             f"RESPUESTA: la primera renovación de la adquisición (licencias de 1 año) renueva "
+             f"{money_label(acquisition_now['renewed'])} en {now} y {money_label(acquisition_next['renewed'])} en {upcoming}: "
+             f"{money_label(change)} ({growth_text(acquisition_next['renewed'], acquisition_now['renewed'])})."]
+    if all(year in renewed_one_year for year in (now, upcoming)):
+        lines.append(f"Es el {percent_text(safe_ratio(acquisition_now['renewed'], renewed_one_year[now]))} del renovado de 1 año "
+                     f"en {now} y el {percent_text(safe_ratio(acquisition_next['renewed'], renewed_one_year[upcoming]))} en {upcoming}.")
+    pipeline_change = acquisition_next["pipeline"] - acquisition_now["pipeline"]
+    lines += ["", f"EN DÓLARES: la pipeline de adquisición a 1 año (lo vendido un año antes, al precio de venta) pasa de "
+                  f"{money_label(acquisition_now['pipeline'])} a {money_label(acquisition_next['pipeline'])} "
+                  f"({money_label(pipeline_change)}); de la de {upcoming}, {money_label(acquisition_next['simulated'])} es la "
+                  f"adquisición simulada de lo que queda de {now} (paso 5.1). Cada $1M de esa pipeline renueva "
+                  f"{money_label(1e6 * acquisition_next['yield'])} en {upcoming}, así que la diferencia de pipeline vale "
+                  f"{money_label(pipeline_change * acquisition_next['yield'])} en {upcoming}; el resto "
+                  f"({money_label(change - pipeline_change * acquisition_next['yield'])}) es que cada dólar renueva distinto "
+                  f"(tasa × revalorización: {percent_text(acquisition_now['yield'])} → {percent_text(acquisition_next['yield'])})."]
+    simulated_uplift, extract_uplift = acquisition_next["simulated_uplift"], acquisition_next["extract_uplift"]
+    if (np.isfinite(simulated_uplift) and np.isfinite(extract_uplift) and extract_uplift > 0
+            and abs(simulated_uplift / extract_uplift - 1) >= SIMULATED_UPLIFT_WARNING):
+        configuration = context.configuration
+        lines.append(f"AVISO: en {upcoming} la adquisición simulada renueva con uplift {ratio_text(simulated_uplift)} y la del "
+                     f"extracto con {ratio_text(extract_uplift)}. La simulada se vende con el descuento "
+                     f"acquisition_discount = {configuration.acquisition_discount:.0%} ({configuration.discount_value_column}: "
+                     f"{percent_text(acquisition_next['simulated_discount'])} ponderado por USD); la del extracto tiene "
+                     f"{percent_text(acquisition_next['extract_discount'])}. Si el descuento no es el real, la revalorización "
+                     f"de la simulada tampoco: revisa acquisition_discount con el descuento real de la adquisición.")
+    lines += ["", f"POR QUÉ (de {now} a {upcoming}, un factor cada vez, el volumen al final):",
+              f"  - volumen: {money_label(bridge['volume'])}. Las unidades que vencen pasan de "
+              f"{acquisition_now['units']:,.0f} a {acquisition_next['units']:,.0f} "
+              f"({growth_text(acquisition_next['units'], acquisition_now['units'])}). Si se hubieran adquirido las "
+              f"unidades del año anterior, {upcoming} renovaría {money_label(-bridge['volume'])} más.",
+              f"  - precio de venta: {money_label(bridge['price_at_sale'])}. El USD que vence por unidad pasa de "
+              f"{unit_price_text(acquisition_now['price'])} a {unit_price_text(acquisition_next['price'])} "
+              f"(más descuento en la venta = menos USD por unidad, y más margen para la revalorización).",
+              f"  - tasa: {money_label(bridge['rate'])}. Tasa en USD {percent_text(acquisition_now['rate'])} → "
+              f"{percent_text(acquisition_next['rate'])} (en unidades {percent_text(acquisition_now['rate_units'])} → "
+              f"{percent_text(acquisition_next['rate_units'])}).",
+              f"  - revalorización: {money_label(bridge['uplift'])}. Uplift {ratio_text(acquisition_now['uplift'])} → "
+              f"{ratio_text(acquisition_next['uplift'])}; el que renueva paga "
+              f"{unit_price_text(acquisition_now['renewed_price'])} → {unit_price_text(acquisition_next['renewed_price'])} por unidad."]
+    lines += ["", "FRENTE A LA RETENCIÓN (lo que la adquisición renueva sobre lo que renovaría a la rentabilidad de la retención):"]
+    for year in (now, upcoming):
+        if year not in acquisition or year not in retention:
+            continue
+        premium = premium_over_retention(acquisition[year], retention[year])
+        lines.append(f"  - {year}: tasa en unidades {percent_text(acquisition[year]['rate_units'])} frente a "
+                     f"{percent_text(retention[year]['rate_units'])}; uplift {ratio_text(acquisition[year]['uplift'])} frente a "
+                     f"{ratio_text(retention[year]['uplift'])}. Prima de revalorización {money_label(premium['uplift_premium'])}, "
+                     f"hueco de tasa {money_label(premium['rate_gap'])}: neto {money_label(premium['premium'])}.")
+    yield_next = acquisition_next["yield"]
+    if np.isfinite(yield_next):
+        lines.append(f"  - Cada $1M de pipeline de adquisición a 1 año renueva {money_label(1e6 * yield_next)} en {upcoming}; "
+                     f"de retención, {money_label(1e6 * retention.get(upcoming, {}).get('yield', np.nan))}.")
+    if len(sales):
+        months = sales.attrs.get("months_to_date", 12)
+        last_year = int(sales["anio_venta"].max())
+        lines += ["", f"VENTAS DE ADQUISICIÓN (enero a {MONTH_NAMES[months - 1]} de cada año, USD vendido):"]
+        for term_value in sorted(sales["plazo_anos"].unique()):
+            of_term = sales[sales["plazo_anos"] == term_value].set_index("anio_venta")
+            this_year, previous_year = of_term.loc[last_year], of_term.loc[last_year - 1] if last_year - 1 in of_term.index else None
+            if not this_year["visible"]:
+                lines.append(f"  - {term_value} año(s): las de {last_year} aún no se ven en el extracto (vencen después de su "
+                             f"último mes); el paso 5.1 las estima con la proporción por plazo.")
+                continue
+            previous_text = (f" frente a {money_label(previous_year['vendido_usd'])} en {last_year - 1} "
+                             f"({growth_text(this_year['vendido_usd'], previous_year['vendido_usd'])})"
+                             if previous_year is not None and previous_year["visible"] else "")
+            lines.append(f"  - {term_value} año(s): {money_label(this_year['vendido_usd'])} en {last_year}{previous_text}.")
+        lines.append("  Lo vendido a 2 y 3 años este año no vence el año que viene: es pipeline que falta en él.")
+    return lines
+
+
+def draw_9_1(table, context, number):
+    now, upcoming = context.current_year, context.next_year
+    total = total_rows(table)
+    acquisition = factors_by_year(total, ORIGIN_ACQUISITION)
+    retention = factors_by_year(total, ORIGIN_RETENTION)
+    years = sorted(set(acquisition) & set(retention))
+    if now not in acquisition or upcoming not in acquisition:
+        return []
+    bridge = acquisition_bridge(acquisition[now], acquisition[upcoming])
+    sales, sales_sql = acquisition_sales_by_term(context)
+    with open(os.path.join(context.output_folder, f"{number.replace('.', '_')}_ventas_por_plazo.sql"), "w", encoding="utf-8") as handle:
+        handle.write(sales_sql + "\n")
+
+    # the answer, first: printed and written next to the charts
+    answer_lines = acquisition_answer(context, acquisition, retention, bridge, sales)
+    answer_path = os.path.join(context.output_folder, f"{number.replace('.', '_')}_respuesta.md")
+    with open(answer_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(answer_lines) + "\n")
+    print(f"[informe] {number} · respuesta:")
+    for line in answer_lines:
+        print(f"[informe]    {line}")
+    paths = []
+
+    # ─── 9.1 · the answer in two charts: the premium of every year and the bridge to next year ───
+    figure, axes = new_figure(15, 17, 3, 1, gridspec_kw={"height_ratios": [2.2, 2.2, 3.2]})
+    positions = np.arange(len(years))
+    premiums = {year: premium_over_retention(acquisition[year], retention[year]) for year in years}
+    width = 0.2
+    axes[0].bar(positions - 1.5 * width, [acquisition[year]["renewed"] for year in years], width, color=INK,
+                label="renewed by the acquisition (first renewal)")
+    axes[0].bar(positions - 0.5 * width, [premiums[year]["at_retention_yield"] for year in years], width, color=INK_MUTED,
+                label="the same pipeline at the yield of the retention")
+    axes[0].bar(positions + 0.5 * width, [premiums[year]["uplift_premium"] for year in years], width, color=AQUA,
+                label="uplift premium (it pays more when it renews)")
+    axes[0].bar(positions + 1.5 * width, [premiums[year]["rate_gap"] for year in years], width, color=ORANGE,
+                label="rate gap (it renews less)")
+    axes[0].axhline(0, color=INK_MUTED, linewidth=0.8)
+    axes[0].set_xticks(positions)
+    axes[0].set_xticklabels([year_label(year, context) for year in years], fontsize=8.5)
+    money_axis(axes[0])
+    axes[0].legend(fontsize=8, frameon=False, ncol=2, loc="upper right")
+    axes[0].set_title("The first renewal of the 1-year acquisitions against what the same pipeline would renew at the "
+                      "yield of the retention", fontsize=10, color=INK, loc="left")
+    bridge_waterfall(axes[1], f"renewed {now}", acquisition[now]["renewed"], bridge, f"renewed {upcoming}",
+                     acquisition[upcoming]["renewed"])
+    axes[1].set_title(f"From {now} to {upcoming}: the renewed money of the acquisition, one factor at a time (the volume "
+                      "last: it is what the units not acquired cost)", fontsize=10, color=INK, loc="left")
+    annex = {}
+    for year in years:
+        acq, ret, premium = acquisition[year], retention[year], premiums[year]
+        annex[str(year)] = {
+            "acquisition · units due": f"{acq['units']:,.0f}",
+            "acquisition · USD due (pipeline)": money_label(acq["pipeline"]),
+            "acquisition · USD due per unit (price at sale)": unit_price_text(acq["price"]),
+            "acquisition · discount at sale (weighted by USD)": percent_text(acq["discount"]),
+            "acquisition · rate in units": percent_text(acq["rate_units"]),
+            "acquisition · rate in USD": percent_text(acq["rate"]),
+            "acquisition · uplift": ratio_text(acq["uplift"]),
+            "acquisition · renewed USD per renewed unit": unit_price_text(acq["renewed_price"]),
+            "acquisition · renewed USD": money_label(acq["renewed"]),
+            "acquisition · yield (renewed / pipeline)": percent_text(acq["yield"]),
+            "retention · USD due per unit": unit_price_text(ret["price"]),
+            "retention · discount (weighted by USD)": percent_text(ret["discount"]),
+            "retention · rate in units": percent_text(ret["rate_units"]),
+            "retention · uplift": ratio_text(ret["uplift"]),
+            "retention · yield": percent_text(ret["yield"]),
+            "retention · renewed USD": money_label(ret["renewed"]),
+            "acquisition share of the 1-year renewed USD": percent_text(safe_ratio(acq["renewed"], acq["renewed"] + ret["renewed"])),
+            "premium over retention": money_label(premium["premium"]),
+            "   of which uplift premium": money_label(premium["uplift_premium"]),
+            "   of which rate gap": money_label(premium["rate_gap"]),
+        }
+    annex = pd.DataFrame(annex)
+    annex[f"{upcoming} vs {now}"] = ""
+    for label, key in (("acquisition · units due", "units"), ("acquisition · USD due (pipeline)", "pipeline"),
+                       ("acquisition · renewed USD", "renewed")):
+        annex.loc[label, f"{upcoming} vs {now}"] = growth_text(acquisition[upcoming][key], acquisition[now][key])
+    for effect, (label, _) in BRIDGE_EFFECTS.items():
+        annex.loc[f"bridge {now} → {upcoming} · {label}", f"{upcoming} vs {now}"] = money_label(bridge[effect])
+    annex = annex.fillna("")
+    annex_table(axes[2], annex, "Annex · the 1-year pipeline by origin, every year (the current one: real to the last "
+                                "closed month, forecast after; the next one: forecast)", font_size=7.5, first_column_width=0.3)
+    write_annex(context, number, "adquisicion_frente_a_retencion", annex)
+    titles(figure, f"{number} · How much does {upcoming} change because of the acquisition of {now}?",
+           f"The first renewal of the acquisitions renews {money_label(acquisition[now]['renewed'])} in {now} and "
+           f"{money_label(acquisition[upcoming]['renewed'])} in {upcoming} ({money_label(bridge['volume'] + bridge['price_at_sale'] + bridge['rate'] + bridge['uplift'])}): "
+           f"volume {money_label(bridge['volume'])}, price at sale {money_label(bridge['price_at_sale'])}, rate "
+           f"{money_label(bridge['rate'])}, uplift {money_label(bridge['uplift'])}. renewed = units × USD per unit × "
+           "rate × uplift; the acquisition is sold with a discount, renews less and pays more when it renews.")
+    paths.append(save(figure, chart_path(context, number, "adquisicion_en_la_renovacion"), top=0.93))
+
+    # ─── 9.1a · by region: where the change of next year comes from ───
+    regions_table = region_rows(table)
+    region_column = context.region
+    region_lines = {}
+    for region, of_region in regions_table.groupby(region_column):
+        acquisition_of_region = factors_by_year(of_region, ORIGIN_ACQUISITION)
+        retention_of_region = factors_by_year(of_region, ORIGIN_RETENTION)
+        if now not in acquisition_of_region or upcoming not in acquisition_of_region:
+            continue
+        region_bridge = acquisition_bridge(acquisition_of_region[now], acquisition_of_region[upcoming])
+        premium_next = (premium_over_retention(acquisition_of_region[upcoming], retention_of_region[upcoming])
+                        if upcoming in retention_of_region else {"premium": np.nan})
+        region_lines[str(region)] = {"now": acquisition_of_region[now], "next": acquisition_of_region[upcoming],
+                                     "bridge": region_bridge, "premium_next": premium_next["premium"]}
+    if region_lines:
+        order = sorted(region_lines, key=lambda region: region_lines[region]["next"]["renewed"] - region_lines[region]["now"]["renewed"])
+        figure, axes = new_figure(15, 0.8 * len(order) + 5.5, 2, 1,
+                                  gridspec_kw={"height_ratios": [max(2.0, 0.6 * len(order)), 0.3 * len(order) + 1.2]})
+        positions = np.arange(len(order))
+        bar_height = 0.2
+        for offset, (effect, (label, colour)) in zip((-1.5, -0.5, 0.5, 1.5), BRIDGE_EFFECTS.items()):
+            axes[0].barh(positions + offset * bar_height, [region_lines[region]["bridge"][effect] for region in order],
+                         bar_height, color=colour, label=label)
+        changes = [region_lines[region]["next"]["renewed"] - region_lines[region]["now"]["renewed"] for region in order]
+        axes[0].scatter(changes, positions, color=INK, marker="D", s=22, zorder=3, label=f"change {now} → {upcoming}")
+        axes[0].axvline(0, color=INK_MUTED, linewidth=0.8)
+        axes[0].set_yticks(positions)
+        axes[0].set_yticklabels(order, fontsize=8)
+        axes[0].xaxis.set_major_formatter(lambda value, _: money_label(value))
+        axes[0].legend(fontsize=8, frameon=False, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+        axes[0].set_title(f"The change of the renewed money of the acquisition {now} → {upcoming} by region, split by factor",
+                          fontsize=10, color=INK, loc="left")
+        region_annex = pd.DataFrame({region: {
+            f"renewed {now}": money_label(line["now"]["renewed"]), f"renewed {upcoming}": money_label(line["next"]["renewed"]),
+            "change": money_label(line["next"]["renewed"] - line["now"]["renewed"]),
+            **{BRIDGE_SHORT_NAMES[effect]: money_label(line["bridge"][effect]) for effect in BRIDGE_EFFECTS},
+            "units due": f"{line['now']['units']:,.0f} → {line['next']['units']:,.0f}",
+            "USD/unit due": f"{unit_price_text(line['now']['price'])} → {unit_price_text(line['next']['price'])}",
+            "uplift": f"{ratio_text(line['now']['uplift'])} → {ratio_text(line['next']['uplift'])}",
+            f"premium {upcoming}": money_label(line["premium_next"])} for region, line in region_lines.items()}).T
+        region_annex = region_annex.loc[order[::-1]]
+        annex_table(axes[1], region_annex, "Annex · by region", font_size=7, first_column_width=0.14)
+        write_annex(context, number, "por_region", region_annex)
+        titles(figure, f"{number}a · Where does the change of the acquisition come from, by region?",
+               "Volume: the units due (what was acquired a year before); price at sale: the USD due per unit (the "
+               "discount it was sold with); rate and uplift: how much of it renews and at what price.")
+        paths.append(save(figure, chart_path(context, number, "adquisicion_por_region"), top=0.93))
+
+    # ─── 9.1b · month by month, and the sales of acquisition by term ───
+    monthly = total[(total["origen"] == ORIGIN_ACQUISITION) & (total["plazo"] == TERM_ONE_YEAR)].copy()
+    monthly["mes"] = monthly["periodo"].astype(str).str[5:7].astype(int)
+    monthly = monthly.groupby(["anio", "mes"])[FACTOR_SUMS].sum().reset_index()
+    monthly["uplift"] = monthly["renovado_usd"] / monthly["base_usd"].replace(0, np.nan)
+    figure, axes = new_figure(15, 13, 3, 1, gridspec_kw={"height_ratios": [2.2, 2.2, 1.0]})
+    lines_by_year(axes[0], monthly, "renovado_usd", context)
+    money_axis(axes[0])
+    axes[0].legend(fontsize=8, frameon=False, ncol=3)
+    axes[0].set_title("Renewed USD of the first renewal of the 1-year acquisitions, by due month (dashed: forecast)",
+                      fontsize=10, color=INK, loc="left")
+    lines_by_year(axes[1], monthly, "uplift", context)
+    axes[1].set_title("Its uplift (renewed / USD due of what renews), by due month", fontsize=10, color=INK, loc="left")
+    if len(sales):
+        sales_annex = sales.copy()
+        sales_annex["term"] = sales_annex["plazo_anos"].map(lambda years: f"{years} year" + ("s" if years > 1 else ""))
+        sales_annex["value"] = [f"{money_label(usd)} · {units:,.0f} u" if visible else "not visible yet"
+                                for usd, units, visible in zip(sales_annex["vendido_usd"], sales_annex["vendidas_unidades"],
+                                                               sales_annex["visible"])]
+        sales_annex = sales_annex.pivot(index="term", columns="anio_venta", values="value")
+        sales_annex.columns = [str(column) for column in sales_annex.columns]
+        months = sales.attrs.get("months_to_date", 12)
+        annex_table(axes[2], sales_annex, f"Annex · acquisition sold by term, January to {ENGLISH_MONTHS[months - 1]} of "
+                                          "every year (USD as pipeline · units). Only the 1-year part falls due next year",
+                    font_size=8, first_column_width=0.14)
+        write_annex(context, number, "ventas_por_plazo", sales_annex)
+    else:
+        axes[2].axis("off")
+    titles(figure, f"{number}b · The acquisition month by month, and what was sold by term",
+           "A month where the first renewal falls is a month whose acquisition a year before was lower; a sale of 2 or 3 "
+           "years is pipeline that does not come back next year.")
+    paths.append(save(figure, chart_path(context, number, "adquisicion_mes_a_mes"), top=0.93))
+    return paths
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════
 # THE QUESTIONS, IN THE ORDER OF THE STORY
 # ═══════════════════════════════════════════════════════════════════════════════════
 
@@ -3694,6 +4226,7 @@ CHAPTER_BREAKDOWN = "5 · Cómo desgranarlo"
 CHAPTER_REAL_BANDS = "6 · Las bandas reales"
 CHAPTER_COMPONENTS = "7 · La pipeline auditada por componentes"
 CHAPTER_NEXT_YEAR = "8 · Entender el año que viene"
+CHAPTER_MONOGRAPHS = "9 · Monográficos: una pregunta de negocio, su respuesta y su detalle"
 
 QUESTIONS = [
     Question("1.1", CHAPTER_REAL, "¿Cuánta pipeline real vence cada año y cuánto se ha renovado?", "pipeline_real_por_anio", sql_1_1, draw_1_1),
@@ -3749,6 +4282,8 @@ QUESTIONS = [
     Question("8.9", CHAPTER_NEXT_YEAR, "¿Dónde se han detectado subidas de precio y desde cuándo?", "subidas_detectadas",
              sql_8_9, draw_8_9),
     Question("8.10", CHAPTER_NEXT_YEAR, "¿A qué plazo renuevan las licencias?", "transiciones_de_plazo", sql_8_10, draw_8_10),
+    Question("9.1", CHAPTER_MONOGRAPHS, "¿Cuánto cambia el año que viene por la adquisición de este año?",
+             "adquisicion_en_la_renovacion", sql_9_1, draw_9_1),
 ]
 
 

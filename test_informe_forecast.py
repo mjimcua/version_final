@@ -15,6 +15,9 @@ F · the pipeline audited by its components (chapter 7): the components add up t
     uplifts of its components
 G · understanding next year (chapter 8): renewed = pipeline × rate × uplift; the bridge from this year to the next
     adds up; volume + mix + performance is the change of every dimension; the rates are rates
+H · the monographs (chapter 9): 9.1 · acquisition + retention is the pipeline of the core; the premium over retention
+    is its rate gap + its uplift premium; the bridge price + rate + uplift + volume is the change, and the volume is
+    the counterfactual; the answer is written
 """
 
 # ─── imports ─────────────────────────────────────────────────────────────────────
@@ -26,8 +29,9 @@ import tempfile
 import numpy as np
 import pandas as pd
 
-from informe_forecast import (BAND_RULES, COMPONENTS, CONCEPTS, QUESTIONS, UPLIFT_COMPONENTS, bridge_of, calibration_factors,
-                              composition_indexes, mix_split, report)
+from informe_forecast import (BAND_RULES, COMPONENTS, CONCEPTS, ORIGIN_ACQUISITION, ORIGIN_RETENTION, QUESTIONS,
+                              UPLIFT_COMPONENTS, acquisition_bridge, bridge_of, calibration_factors, composition_indexes,
+                              factors_by_year, mix_split, premium_over_retention, report)
 from main import run
 from report_queries import year_by_region_query
 from test_helpers import check, finish, synthetic_with
@@ -49,7 +53,8 @@ def test_every_question_answers(configuration, answers) -> None:
     answered = [result for result in answers.values() if result.table is not None]
     files_written = all(os.path.exists(path) for result in answered for path in result.charts)
     folder = os.path.join(configuration.output_folder, "informe_test")
-    sql_files = [name for name in os.listdir(folder) if name.endswith(".sql")]
+    question_files = {f"{question.number.replace('.', '_')}_{question.name}.sql" for question in QUESTIONS}
+    sql_files = [name for name in os.listdir(folder) if name in question_files]     # a question may write other SQL too
     check(files_written and len(sql_files) == len(answered) and all(len(result.charts) for result in answered if len(result.table)),
           f"every answer leaves its SQL, its CSV and its charts ({len(sql_files)} SQL files)")
     skipped = [number for number, result in answers.items() if result.table is None]
@@ -222,6 +227,47 @@ def test_next_year(configuration, answers) -> None:
           f"8.7: every future month has its months ahead (up to h = {int(horizon['meses_vista'].max())})")
 
 
+def test_the_monographs(configuration, answers) -> None:
+    print("H · the monographs")
+    current_year = configuration.calendar_boundaries()["current"].year
+    table = answers["9.1"].table
+    total = table[table["orden_total"] == 1]
+    by_year = total.groupby("anio")[["pipeline_usd", "renovado_usd"]].sum()
+    core = pd.read_sql("""SELECT forecast_year AS anio, SUM(COALESCE(forecast_to_renew_USD_at_due, forecast_to_renew_USD, 0)) AS pipeline_usd,
+       SUM(COALESCE(forecast_renewed_USD, 0)) AS renovado_usd
+FROM sff_nucleo
+WHERE forecast_pipeline_source IN ('pipeline_renovado_real', 'pipeline_real_esperado', 'pipeline_proyectada', 'pipeline_simulada')
+GROUP BY forecast_year""", configuration.sql_engine).set_index("anio")
+    check(np.allclose(by_year.to_numpy(), core.reindex(by_year.index).to_numpy()) and len(by_year) >= 3,
+          f"9.1: acquisition + retention, every term, is the pipeline and the renewed money of the core every year ({len(by_year)} years)")
+    acquisition = factors_by_year(total, ORIGIN_ACQUISITION)
+    retention = factors_by_year(total, ORIGIN_RETENTION)
+    premiums_ok = []
+    for year in sorted(set(acquisition) & set(retention)):
+        premium = premium_over_retention(acquisition[year], retention[year])
+        premiums_ok.append(np.isclose(premium["at_retention_yield"] + premium["premium"], acquisition[year]["renewed"])
+                           and np.isclose(premium["rate_gap"] + premium["uplift_premium"], premium["premium"]))
+    check(all(premiums_ok) and len(premiums_ok) >= 3,
+          f"9.1: the acquisition renews its pipeline at the yield of the retention + its premium, and the premium is its rate "
+          f"gap + its uplift premium ({len(premiums_ok)} years)")
+    now, upcoming = acquisition[current_year], acquisition[current_year + 1]
+    bridge = acquisition_bridge(now, upcoming)
+    counterfactual = (upcoming["units"] - now["units"]) * upcoming["price"] * upcoming["rate"] * upcoming["uplift"]
+    check(np.isclose(sum(bridge.values()), upcoming["renewed"] - now["renewed"]) and np.isclose(bridge["volume"], counterfactual),
+          f"9.1: price at sale + rate + uplift + volume = the change of the acquisition {current_year} → {current_year + 1} "
+          f"(${now['renewed']:,.0f} → ${upcoming['renewed']:,.0f}), and the volume is the units not acquired at next year's conditions")
+    by_hand = acquisition_bridge({"units": 100, "price": 10, "rate": 0.5, "uplift": 1.5, "renewed": 750},
+                                 {"units": 80, "price": 12, "rate": 0.6, "uplift": 1.4, "renewed": 806.4})
+    check(np.isclose(by_hand["price_at_sale"], 150) and np.isclose(by_hand["rate"], 180) and np.isclose(by_hand["uplift"], -72)
+          and np.isclose(by_hand["volume"], -201.6),
+          "9.1: by hand, 100 → 80 units, $10 → $12, 50 % → 60 %, 1.5 → 1.4: price +$150, rate +$180, uplift −$72, volume −$201.6")
+    folder = os.path.join(configuration.output_folder, "informe_test")
+    answer_file = os.path.join(folder, "9_1_respuesta.md")
+    written = os.path.exists(answer_file) and "PREGUNTA" in open(answer_file, encoding="utf-8").read()
+    check(written and len(answers["9.1"].charts) == 3 and os.path.exists(os.path.join(folder, "9_1_ventas_por_plazo.sql")),
+          "9.1: the answer (9_1_respuesta.md), its three charts and the SQL of the sales by term are written")
+
+
 if __name__ == "__main__":
     run_configuration, run_answers = the_run()
     test_every_question_answers(run_configuration, run_answers)
@@ -231,4 +277,5 @@ if __name__ == "__main__":
     test_the_real_bands(run_configuration, run_answers)
     test_the_components(run_configuration, run_answers)
     test_next_year(run_configuration, run_answers)
+    test_the_monographs(run_configuration, run_answers)
     finish()
