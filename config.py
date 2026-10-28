@@ -183,6 +183,7 @@ TABLE_CONTRACT_CHECK = "uplift_contrato_check"   # step 3.1: the contract rule a
 TABLE_UPLIFT_HOMOGENEITY = "uplift_homogeneidad"   # step 3.1: the renewers' due price against their cell's (exact base only)
 TABLE_UPLIFT_BACKTEST = "backtest_uplift"    # step 3.3: statistical vs contract in the exam months
 TABLE_FORECAST_MONTH = "forecast_mes"        # step 7.2: the total by month with its bands
+TABLE_TERM_TRANSITIONS = "transiciones_plazo"   # step 7.2: the share of every destination term, by level, group and origin term
 TABLE_BUSINESS_SUMMARY = "resumen_negocio"   # step 7.2: the answers by year
 TABLE_FORECAST_MATURATION = "forecast_maduracion"   # step 7.2: the maturation of the state, month by month
 TABLE_MATURATION_CURVE = "curva_maduracion"          # step 7.2: the curve of every dated state (step 4.1) and its exam by h
@@ -437,6 +438,10 @@ ISOLATED_RATIO_BANDS = [
     ("isolated_tr_usd_renewed_ge120_col", "ge120", 1.20, float("inf")),
 ]
 CORE_ISOLATED_BAND_PREFIX = "forecast_isolated_to_renew_USD_renewed_"     # + the band's short name
+# the term transitions of a renewal: (short name, years of the licence it renews to) and their columns in the core
+TERM_DESTINATIONS = [("1y", 1), ("2y", 2), ("3y", 3)]
+CORE_RENEWED_UNITS_TO_PREFIX = "forecast_renewed_units_to_"     # + 1y, 2y, 3y
+CORE_RENEWED_USD_TO_PREFIX = "forecast_renewed_USD_to_"         # + 1y, 2y, 3y
 
 
 def weighted_ratio_spread(base: pd.Series, renewed: pd.Series, second_moment: pd.Series) -> pd.Series:
@@ -558,7 +563,7 @@ class Config:
     period_col: str = "period"                              # [CFG ORQ VER 1.1 1.2 1.3 1.4 1.5 1.6 1.7 2.2 2.4 2.5 2.6 2.7 3.1 3.2 3.3 4.1 5.1 6.1 7.1 7.2 7.3 8.1 8.2 8.3 8.5 8.6] the month of the row
     pipeline_units_col: str = "total_tr_units"              # [CFG VER B1 1.1 1.2 1.3 1.4 1.5 1.6 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 5.1 6.1 7.1 7.2 7.3 8.1 8.2 8.3 8.6] subscriptions falling due
     pipeline_usd_col: str = "total_tr_usd"                  # [CFG VER B1 1.1 1.2 1.3 1.4 1.5 1.6 3.1 3.2 4.1 5.1 7.1 7.2 7.3 8.1 8.3 8.5 8.6] their value at due date
-    renewed_units_col: str = "total_renewed_units"          # [CFG VER 1.1 1.2 1.3 1.5 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 6.1 7.1 7.3 8.1 8.2 8.3] subscriptions renewed
+    renewed_units_col: str = "total_renewed_units"          # [CFG VER 1.1 1.2 1.3 1.5 1.7 2.2 2.4 2.5 2.7 3.1 3.2 4.1 6.1 7.1 7.2 7.3 8.1 8.2 8.3] subscriptions renewed
     renewed_usd_col: str = "total_renewed_usd"              # [CFG VER 1.1 1.2 1.3 3.1 3.2 4.1 6.1 7.1 7.2 7.3 8.1 8.3 8.5 8.6] their value at renewal
     extra_measure_cols: list = field(default_factory=list)  # [CFG 1.4] other measures (reacquisitions, AUVs): declared, not used yet
     renewed_pipeline_usd_col: Optional[str] = None  # [CFG 1.2 3.1 3.2] the USD that was FALLING DUE of the contracts that RENEWED
@@ -655,7 +660,7 @@ class Config:
     # (renewals of 1-year licences, acquisitions, time_series conversions) falls due 12 months later
     simulation_end: Optional[str] = None          # [CFG] the last month simulated; None = December of the current month's year
     term_column: Optional[str] = None             # [CFG 1.3 5.1 7.2] the column with the term of the licence; None = every licence is of 1 year
-    one_year_term_value: str = "1 year"           # [CFG 5.1] the value of term_column that means a 1-year licence (only those re-enter)
+    one_year_term_value: str = "1 year"           # [CFG 5.1 7.2] the value of term_column that means a 1-year licence (only those re-enter)
     renewal_reentry_discount: float = 0.0         # [CFG 7.2] a renewal falls due again at the price it renewed: no discount
     acquisition_column: Optional[str] = None      # [CFG VER 3.2 5.1 7.2] the column that says a row is an acquisition; None = no acquisition simulated
     acquisition_values: list = field(default_factory=list)      # [CFG 3.2 5.1 7.2] its values that are acquisition: each one is simulated apart
@@ -667,6 +672,28 @@ class Config:
                                                              # operation). The timevarying states of a renewal are always
                                                              # neutral: nothing is known yet of its dormant, softcancel…
                                                                 # (they have different proportions)
+    # the TERM TRANSITIONS of a renewal (28-oct-2026): of the units (and USD) that renewed in a row, those that renewed
+    # to a licence of 1, 2 or 3 years. Optional, all six or none; like the isolated measures, only known once the
+    # month closes. With them, step 7.2 splits the renewal it projects by the share of every destination learned from
+    # the closed months: the part that renews to 1 year falls due again 12 months later, at the value of its
+    # transition; the part that renews to 2 or 3 years leaves a gap (it falls due 24 or 36 months later); and the
+    # multi-year licences of the window that renew to 1 year are projected too. Without them, every 1-year licence
+    # renews to 1 year and the multi-year ones are not projected
+    renewed_units_to_1y_col: Optional[str] = None    # [CFG 7.2] renewed units that renewed to a 1-year licence (total_renewed_units_to_1y)
+    renewed_units_to_2y_col: Optional[str] = None    # [7.2] … to a 2-year licence
+    renewed_units_to_3y_col: Optional[str] = None    # [7.2] … to a 3-year licence
+    renewed_usd_to_1y_col: Optional[str] = None      # [7.2] renewed USD of those that renewed to 1 year (total_renewed_usd_to_1y)
+    renewed_usd_to_2y_col: Optional[str] = None      # [7.2] … to 2 years
+    renewed_usd_to_3y_col: Optional[str] = None      # [7.2] … to 3 years
+    term_transition_window_months: int = 12          # [7.2] the share of every destination: Σ of the last 12 closed months (a share
+                                                     # reasonably constant, the assumption of the forecast)
+    term_transition_levels: list = field(default_factory=lambda: [[]])   # [7.2] where the share is learned, finest first:
+                                                     # every level is a list of dims (the origin term always added); a
+                                                     # group takes the first level with term_transition_min_renewed_units
+                                                     # renewals in the window ([] = the whole portfolio, the last resort)
+    term_transition_min_renewed_units: float = 300.0  # [7.2] the renewals a group needs in the window to learn its own share
+    term_transition_known_share_min: float = 0.99     # [7.2] the check: the destination is known for at least 99 % of the renewed
+                                                      # units of the closed months (below: renewals to another term, or empty)
     acquisition_discount: float = 0.4             # [CFG 5.1 8.6] an acquisition is sold with this discount (it renews without it)
     acquisition_level_window_months: int = 3      # [5.1] acquisition level: last 3 months sold vs the same months a year before
     acquisition_auv_window_months: int = 12       # [5.1] acquisition value per unit: Σ value / Σ units of the last 12 closed months
@@ -919,6 +946,13 @@ class Config:
         # [2] the states with maturation columns are declared timevarying dims; the leveled dims: mandatory, with a
         #     valid type; their generated level is a mandatory dim from here on (step 1.2 creates it before any step
         #     reads the dims)
+        transition_fields = [f"renewed_{kind}_to_{short_name}_col" for kind in ("units", "usd") for short_name, _ in TERM_DESTINATIONS]
+        declared_transitions = [name for name in transition_fields if getattr(self, name)]
+        if declared_transitions and len(declared_transitions) != len(transition_fields):
+            missing_transitions = [name for name in transition_fields if not getattr(self, name)]
+            raise ValueError(f"the term transitions need the six columns or none; missing: {missing_transitions}")
+        if declared_transitions and not self.term_column:
+            raise ValueError("the term transitions need term_column (the term of the licence that falls due)")
         not_timevarying = [state for state in self.maturation_dims if state not in self.structural_timevarying_dims]
         if not_timevarying:
             raise ValueError(f"maturation_dims must be structural_timevarying_dims: {not_timevarying}")
@@ -1190,8 +1224,19 @@ class Config:
         for field_name, short_name, _, _ in ISOLATED_RATIO_BANDS:
             candidates.append((field_name, getattr(self, field_name), self.isolated_renewed_pipeline_usd_col,
                                f"s1_3_isolated_band_{short_name}", CORE_ISOLATED_BAND_PREFIX + short_name))
+        for short_name, _ in TERM_DESTINATIONS:      # the term transitions: parts of the renewed units and USD
+            candidates.append((f"renewed_units_to_{short_name}_col", getattr(self, f"renewed_units_to_{short_name}_col"),
+                               self.renewed_units_col, f"s1_3_renovadas_unidades_a_{short_name}",
+                               CORE_RENEWED_UNITS_TO_PREFIX + short_name))
+            candidates.append((f"renewed_usd_to_{short_name}_col", getattr(self, f"renewed_usd_to_{short_name}_col"),
+                               self.renewed_usd_col, f"s1_3_renovado_usd_a_{short_name}", CORE_RENEWED_USD_TO_PREFIX + short_name))
         return [ClosedMonthMeasure(config_field, raw_column, part_of, s1_3_column, core_column)
                 for config_field, raw_column, part_of, s1_3_column, core_column in candidates if raw_column]
+
+    @property
+    def term_transitions_declared(self) -> bool:
+        """True when the six columns of the term transitions are declared."""
+        return bool(self.renewed_units_to_1y_col)
 
     @property
     def isolated_ratio_bands(self) -> list:
@@ -1488,6 +1533,7 @@ TECHNIQUE_USERS = ["2.6", "2.7", "7.1", "8.2"]          # the steps that call th
 PREDICTION_USERS = ["2.7", "7.1"]                      # the steps that call the prediction (the credibility shift)
 # the shared modules that read the Config themselves (configuration.<field>), and the steps that call them
 SHARED_MODULE_USERS = {"price_increases.py": ["3.1", "3.2", "3.3", "7.2", "8.4"], "maturation.py": ["4.1"],
+                       "term_transitions.py": ["7.2"],
                        "time_series_charts.py": ["1.2", "6.1"], "resumen_negocio.py": ["8.6"], "graficos.py": ["8.6"]}
 # every label in run order: the Config, the orchestrator, then every block followed by its steps
 LABEL_ORDER = ["CFG", "ORQ", "VER"] + [label for block, count in STEPS_OF_BLOCK.items()

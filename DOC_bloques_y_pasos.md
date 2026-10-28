@@ -573,7 +573,7 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la proyectada q
   - `series_exam` (7.1): el error de la tasa por horizonte;
   - `pool_reference` (2.4) y `backtest` (2.6): la confianza de cada fila.
 - **También declara** `series_estimate` (2.3), `pool_series` (2.4) y `rated_units` (1.7). Solo los usaría si no le llegara la caja 2.7; sobran en el grafo.
-- **Sale:** `forecast`: cada fila futura con tasa, uplift, esperado (con los estados de hoy y al vencer), bandas y confianza (y, desde el 26-oct, el error del volumen de cada adquisición simulada, que llega al núcleo como s7\_2\_error\_captacion\_usd); los totales por mes y año; la maduración mes a mes. Escribe `sff_forecast_mes`, `sff_resumen_negocio`, sff\_curva\_maduracion y `sff_forecast_maduracion`.
+- **Sale:** `forecast`: cada fila futura con tasa, uplift, esperado (con los estados de hoy y al vencer), bandas y confianza (y, desde el 26-oct, el error del volumen de cada adquisición simulada, que llega al núcleo como s7\_2\_error\_captacion\_usd); los totales por mes y año; la maduración mes a mes. Escribe `sff_forecast_mes`, `sff_resumen_negocio`, sff\_curva\_maduracion y `sff_forecast_maduracion`, y con las transiciones de plazo `sff_transiciones_plazo`.
 - **Depende de:** 2.7, 3.1, 3.3, 4.1, 5.1, 6.1 y 7.1.
 - **Acciones:**
   1. Toma las filas futuras del extracto.
@@ -582,13 +582,13 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la proyectada q
   4. Asigna el uplift (contrato o estadístico) y su banda.
   5. Calcula las renovaciones esperadas con los estados de hoy, fila a fila.
   6. Valora los estados al vencer de las filas del extracto (caja 4.1).
-  7. Proyecta la renovación de 1 año de la pipeline real que vence en la ventana (mes en curso → diciembre): lo que el forecast espera que renueve vuelve a vencer el mismo mes del año siguiente (filas proyectadas, sin descuento y con las dims que cambia la renovación). Hasta el 27-oct-2026 lo hacía la caja 5.1. Las junta con las filas simuladas de la caja 5.1, las predice y las madura; asigna la confianza de cada fila.
+  7. Proyecta la renovación de la pipeline real que vence en la ventana (mes en curso → diciembre): lo que el forecast espera que renueve vuelve a vencer el mismo mes del año siguiente (filas proyectadas, sin descuento y con las dims que cambia la renovación). Sin las transiciones de plazo, solo las licencias de 1 año y enteras. Con las seis columnas de las transiciones (28-oct-2026), cada licencia de la ventana se reparte por la parte de cada plazo de destino de su grupo, aprendida en los 12 últimos meses cerrados en el primer nivel con soporte (subregión × producto → región × producto → producto → cartera), en unidades y en USD por separado. Vuelve como pipeline la parte que renueva a 1 año, también la de las licencias de 2 y 3 años; la parte que renueva a 2 o 3 años deja un hueco. Hasta el 27-oct-2026 lo hacía la caja 5.1. Las junta con las filas simuladas de la caja 5.1, las predice y las madura; asigna la confianza de cada fila.
   8. Suma por mes y año, por origen de la pipeline, y añade el universo time series de la caja 6.1 (sus ingresos simulados, la pipeline de su reentrada y su renovación esperada). La banda oficial, centrada en `total_usd`, reúne todo error medido en meses cerrados: √(tasa² + precio²) de la pipeline (la tasa del 7.1, y una renovación proyectada suma el error del mes en que se predijo su volumen; el precio del 3.3) + el volumen de la captación simulada (5.1) + el universo time series (6.1). Por año, los errores de sus meses sumados.
   9. Comprueba el forecast.
   10. Escribe los meses, el resumen y la maduración.
   11. Cuenta las comprobaciones y para si alguna falla.
   12. Muestra el forecast por mes, por año, la maduración y el detector de estados por encima de su proporción final.
-- **Comprobaciones (11):**
+- **Comprobaciones (11, o 13 con las transiciones de plazo):**
   1. Toda fila futura tiene tasa, uplift y esperado.
   2. Toda tasa y toda banda están en \[0, 1\], y la banda contiene la tasa.
   3. No se predice ninguna fila cerrada; se predice toda fila futura del extracto.
@@ -598,6 +598,7 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la proyectada q
   7. La maduración mueve unidades, no las crea: Σ al vencer = Σ que vence, en unidades y USD, y una fila conserva entre 0 y todas sus unidades.
   8. Ningún estado negativo está HOY 2 pp o más por encima de su proporción final en ningún mes futuro (aviso: el extracto lo pone antes de tiempo).
   9. a 11. `sff_forecast_mes`, `sff_resumen_negocio` y `sff_forecast_maduracion` (y sff\_curva\_maduracion) se escriben y se releen.
+  10. Con las transiciones de plazo: se conoce el plazo de destino de al menos el 99 % de las unidades renovadas de los meses cerrados (aviso), y `sff_transiciones_plazo` se escribe y se relee.
 
 ### 7.3 · Total por año y origen
 

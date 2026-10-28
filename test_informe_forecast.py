@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from informe_forecast import (BAND_RULES, COMPONENTS, CONCEPTS, QUESTIONS, UPLIFT_COMPONENTS, bridge_of, calibration_factors,
-                              mix_split, report)
+                              composition_indexes, mix_split, report)
 from main import run
 from report_queries import year_by_region_query
 from test_helpers import check, finish, synthetic_with
@@ -53,7 +53,7 @@ def test_every_question_answers(configuration, answers) -> None:
     check(files_written and len(sql_files) == len(answered) and all(len(result.charts) for result in answered if len(result.table)),
           f"every answer leaves its SQL, its CSV and its charts ({len(sql_files)} SQL files)")
     skipped = [number for number, result in answers.items() if result.table is None]
-    check(set(skipped) <= {"1.5b", "2.1", "5.2"},
+    check(set(skipped) <= {"1.5b", "2.1", "5.2", "8.10"},
           f"only what the synthetic does not have is skipped, with its reason (skipped: {skipped})")
 
 
@@ -207,6 +207,16 @@ def test_next_year(configuration, answers) -> None:
         changes_ok.append(np.isclose(sum(split.values()), by_year[current_year + 1] - by_year[current_year]))
     check(all(changes_ok) and len(changes_ok) > 2,
           f"8.5: volume + mix + performance is the change of the renewed money in every dimension ({len(changes_ok)} dimensions)")
+    regions = answers["8.8"].table
+    segment_dims = [column for column in regions.columns if column not in
+                    (configuration.business_mandatory_dims[0], "anio", "pipeline_usd", "base_usd", "renovado_usd")]
+    of_year = regions[regions["anio"] == current_year + 1]
+    indexes = composition_indexes(of_year, configuration.business_mandatory_dims[0], segment_dims)
+    weights = indexes["pipeline_usd"] / indexes["pipeline_usd"].sum()
+    check(np.isclose((weights * indexes["composition"]).sum(), 1) and np.isclose((weights * indexes["actual"]).sum(), 1)
+          and np.isclose((weights * indexes[segment_dims[0]]).sum(), 1),
+          f"8.8: weighted by their pipeline, the composition and the actual yield of the regions are the portfolio's "
+          f"({len(indexes)} regions, {len(segment_dims)} dimensions)")
     horizon = answers["8.7"].table
     check(horizon["meses_vista"].dropna().min() >= 1 and len(answers["8.7"].charts) == 1,
           f"8.7: every future month has its months ahead (up to h = {int(horizon['meses_vista'].max())})")

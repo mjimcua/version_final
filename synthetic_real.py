@@ -586,6 +586,13 @@ def finish_the_extract(raw: pd.DataFrame, series: pd.DataFrame) -> pd.DataFrame:
     if timing_columns:                                  # the rows without the mark carry no date of it: null
         raw.loc[raw["softcancel"] != 1, timing_columns] = np.nan
     raw["sku"] = raw["tr_product_level_2"] + " · " + raw["tr_term"]
+    # the term a renewal renews to (28-oct-2026): in this synthetic every licence renews to its own term, so the six
+    # columns of the term transitions say exactly that (the real extract has transitions 2 → 1, 1 → 2…)
+    years = pd.to_numeric(raw["tr_term"].str.extract(r"(\d+)")[0], errors="coerce")
+    for destination_years in (1, 2, 3):
+        same_term = years == destination_years
+        raw[f"total_renewed_units_to_{destination_years}y"] = np.where(same_term, raw["total_renewed_units"], 0.0)
+        raw[f"total_renewed_usd_to_{destination_years}y"] = np.where(same_term, raw["total_renewed_usd"], 0.0)
     raw["flag_time_series"] = 0
     raw["dummy_field"] = 1
     raw["_filter2"] = 1

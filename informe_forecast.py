@@ -45,6 +45,7 @@ import math
 import os
 import sys
 import textwrap
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -53,7 +54,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import inspect
 
-from config import (TABLE_BUSINESS_SUMMARY, TABLE_CORE, TABLE_FORECAST_MATURATION, TABLE_MATURATION_CURVE, Config, running_in_notebook,
+from config import (CORE_RENEWED_UNITS_TO_PREFIX, CORE_RENEWED_USD_TO_PREFIX, TERM_DESTINATIONS, TABLE_BUSINESS_SUMMARY, TABLE_CORE, TABLE_FORECAST_MATURATION, TABLE_MATURATION_CURVE, Config, running_in_notebook,
                     write_frame_to_sql)
 from graficos import (AQUA, BLUE, INK, INK_MUTED, INK_SECONDARY, NEUTRAL_FILL, ORANGE, VIOLET, money_label,
                       new_figure, save, titles)
@@ -1689,23 +1690,42 @@ def month_number(expression: str) -> str:
     return f"(CAST(SUBSTRING({expression}, 1, 4) AS INT) * 12 + CAST(SUBSTRING({expression}, 6, 2) AS INT))"
 
 
-def inside_price_increase(context: ReportContext, alias: str = "n") -> str:
+@dataclass
+class PriceIncreaseLookup:
+    """The months inside a price increase, to join to the core: ctes (the months of every cycle, one row per price
+    group and month, written before the base of a query), join (the LEFT JOIN of the core to them) and flag (1 when
+    the row is inside an increase, 0 otherwise). A join on equal values, not a correlated EXISTS row by row: on a core
+    of millions of rows the EXISTS was most of the time of the report (28-oct-2026)."""
+    ctes: list
+    join: str
+    flag: str
+
+
+INCREASE_MONTHS_CTE = "meses_en_subida"
+
+
+def price_increase_lookup(context: ReportContext, alias: str = "n") -> PriceIncreaseLookup:
     """1 when the row's price group and month are inside the cycle of a price increase of the calendar (step 8.4),
     0 otherwise (and always 0 when this run has no calendar)."""
     configuration = context.configuration
     if not context.has_table(TABLE_PRICE_INCREASE_CALENDAR):
-        return "0"
+        return PriceIncreaseLookup(ctes=[], join="", flag="0")
     calendar = table_in_sql(configuration, TABLE_PRICE_INCREASE_CALENDAR)
     inspector = inspect(context.engine)
     calendar_columns = {column["name"] for column in inspector.get_columns(
         f"{configuration.table_prefix}{TABLE_PRICE_INCREASE_CALENDAR}", schema=configuration.sql_schema)}
     group_dims = [dim for dim in configuration.price_group_dims if dim in calendar_columns and dim in context.core_columns]
-    same_group = "".join(f" AND c.{dim} = {alias}.{dim}" for dim in group_dims)
-    row_month = month_number(f"{alias}.{configuration.period_col}")
-    start = month_number("c.inicio")
-    last_month_of_cycle = configuration.price_cycle_months - 1
-    return (f"CASE WHEN EXISTS (SELECT 1 FROM {calendar} c WHERE {row_month} BETWEEN {start} AND {start} + "
-            f"{last_month_of_cycle}{same_group}) THEN 1 ELSE 0 END")
+    # every month of every cycle: the start of the increase + 0 … price_cycle_months − 1
+    offsets = " UNION ALL ".join(f"SELECT {offset} AS desfase" for offset in range(configuration.price_cycle_months))
+    group_select = "".join(f"c.{dim}, " for dim in group_dims)
+    months_sql = f"""SELECT DISTINCT {group_select}{month_number('c.inicio')} + d.desfase AS mes_numero
+FROM {calendar} c
+CROSS JOIN ({offsets}) d"""
+    same_group = "".join(f"ms.{dim} = {alias}.{dim} AND " for dim in group_dims)
+    join = (f"LEFT JOIN {INCREASE_MONTHS_CTE} ms ON {same_group}"
+            f"ms.mes_numero = {month_number(f'{alias}.{configuration.period_col}')}")
+    return PriceIncreaseLookup(ctes=[(INCREASE_MONTHS_CTE, months_sql)], join=join,
+                               flag="CASE WHEN ms.mes_numero IS NOT NULL THEN 1 ELSE 0 END")
 
 
 def sum_of_component(component: str, value: str, extra_condition: str = "") -> str:
@@ -1763,22 +1783,27 @@ def sql_7_3(context: ReportContext) -> str:
     renewed_sources = ", ".join(f"'{source}'" for source in PIPELINE_SOURCES)
     a_year_later = f"CONCAT(CAST(n.forecast_year + 1 AS VARCHAR(4)), SUBSTRING(n.{period}, 5, 3))"
     component = pipeline_component(context)
+    one_year = is_one_year_term(context)
     base = f"""SELECT {levels}, {a_year_later} AS periodo,
-       COALESCE(n.forecast_renewed_USD, 0) AS renovado_12m_antes_usd,
-       0 AS renewal_1y_usd, 0 AS projected_renewal_usd
+       CASE WHEN {one_year} THEN COALESCE(n.forecast_renewed_USD, 0) ELSE 0 END AS renovado_12m_antes_usd,
+       CASE WHEN {one_year} THEN 0 ELSE COALESCE(n.forecast_renewed_USD, 0) END AS renovado_varios_anos_12m_antes_usd,
+       0 AS renewal_1y_usd, 0 AS projected_renewal_usd, 0 AS r2s_reentrada_usd
 FROM {context.core} n
-WHERE n.forecast_pipeline_source IN ({renewed_sources}) AND {is_one_year_term(context)}
+WHERE n.forecast_pipeline_source IN ({renewed_sources})
   AND n.forecast_year + 1 <= {context.next_year}
 UNION ALL
 SELECT {levels}, n.{period} AS periodo,
-       0 AS renovado_12m_antes_usd,
+       0 AS renovado_12m_antes_usd, 0 AS renovado_varios_anos_12m_antes_usd,
        CASE WHEN {component} = 'renewal_1y' THEN COALESCE(n.forecast_to_renew_USD, 0) ELSE 0 END AS renewal_1y_usd,
-       CASE WHEN {component} = 'projected_renewal' THEN COALESCE(n.forecast_to_renew_USD, 0) ELSE 0 END AS projected_renewal_usd
+       CASE WHEN {component} = 'projected_renewal' THEN COALESCE(n.forecast_to_renew_USD, 0) ELSE 0 END AS projected_renewal_usd,
+       CASE WHEN {component} = 'retail_to_subscription' THEN COALESCE(n.forecast_to_renew_USD, 0) ELSE 0 END AS r2s_reentrada_usd
 FROM {context.core} n
-WHERE n.forecast_pipeline_source IN ('pipeline_renovado_real', 'pipeline_real_esperado', 'pipeline_proyectada')"""
+WHERE n.forecast_pipeline_source IN ('pipeline_renovado_real', 'pipeline_real_esperado', 'pipeline_proyectada', 'ts_reentrada')"""
     measures = ["SUM(renovado_12m_antes_usd) AS renovado_12m_antes_usd",
+                "SUM(renovado_varios_anos_12m_antes_usd) AS renovado_varios_anos_12m_antes_usd",
                 "SUM(renewal_1y_usd) AS renewal_1y_usd",
                 "SUM(projected_renewal_usd) AS projected_renewal_usd",
+                "SUM(r2s_reentrada_usd) AS r2s_reentrada_usd",
                 "(SUM(renewal_1y_usd) + SUM(projected_renewal_usd)) / NULLIF(SUM(renovado_12m_antes_usd), 0) AS ratio_pipeline_sobre_renovado"]
     return with_subtotals(context, base, measures, ["periodo"],
                           comment="7.3 · ¿lo renovado vuelve como pipeline 12 meses después? Pipeline de renovación de 1 año "
@@ -1792,13 +1817,15 @@ def sql_7_4(context: ReportContext) -> str:
     configuration = context.configuration
     period = configuration.period_col
     sources = ", ".join(f"'{source}'" for source in PIPELINE_SOURCES)
+    increases = price_increase_lookup(context)
     base = f"""SELECT {level_columns(context)}, n.forecast_year AS anio, n.{period} AS periodo,
        {pipeline_component(context)} AS componente,
-       {inside_price_increase(context)} AS en_subida,
+       {increases.flag} AS en_subida,
        CASE WHEN n.forecast_status = 'actual' THEN COALESCE(n.forecast_renewed_USD, 0)
             ELSE COALESCE(n.s7_2_esperado_usd, 0) END AS renovado_usd,
        {renewal_base_usd(context)} AS base_uplift_usd
 FROM {context.core} n
+{increases.join}
 WHERE n.forecast_pipeline_source IN ({sources})"""
     measures = []
     for component in UPLIFT_COMPONENTS + ["total"]:
@@ -1816,7 +1843,7 @@ WHERE n.forecast_pipeline_source IN ({sources})"""
             f"AS {component}_uplift_sin_subida"]
     measures.append("SUM(CASE WHEN en_subida = 1 THEN base_uplift_usd ELSE 0 END) / NULLIF(SUM(base_uplift_usd), 0) "
                     "AS parte_en_subida")
-    return with_subtotals(context, base, measures, ["anio", "periodo"],
+    return with_subtotals(context, base, measures, ["anio", "periodo"], ctes=increases.ctes,
                           comment="7.4 · el uplift de cada componente mes a mes, con y sin subidas de precio")
 
 
@@ -2050,12 +2077,15 @@ def draw_7_2(table, context, number):
                        f"{years[1]} vs {years[0]}": growth(this_year, value(name, years[0], "total_usd")),
                        f"built {years[2]}": money_label(built),
                        "built share": f"{100 * built / next_year:.0f} %" if next_year else "—",
-                       f"acquisition {years[1]}": money_label(value(name, years[1], "acquisition_usd")),
-                       f"acquisition {years[2]}": money_label(value(name, years[2], "acquisition_usd")),
-                       f"R2S {years[2]}": money_label(value(name, years[2], "retail_to_subscription_usd"))}
+                       f"acq. due {years[1]} (sold {years[1] - 1})": money_label(value(name, years[1], "acquisition_usd")),
+                       f"acq. due {years[2]} (sold {years[2] - 1})": money_label(value(name, years[2], "acquisition_usd")),
+                       f"R2S re-entry pipeline {years[2]}": money_label(value(name, years[2], "retail_to_subscription_usd"))}
     annex = pd.DataFrame(annex).T
     annex_table(axes[1], annex, "Annex · pipeline per region (built = projected renewals + simulated acquisitions + "
-                                "retail to subscription; acquisition = extract + simulated)", first_column_width=0.12)
+                                "retail to subscription; acq. = the 1-year acquisitions that FALL DUE in the year, sold the "
+                                "year before: extract + simulated; the 2- and 3-year ones fall due later. R2S here is only "
+                                "the pipeline of its re-entry: its revenue of the year has no pipeline, see 4.3 and 8.1b)",
+                first_column_width=0.12)
     write_annex(context, number, "por_region", annex)
     titles(figure, f"{number} · How much pipeline every region has, and how much of it is built",
            "The pipeline that falls due in the year. Next year mixes what the extract already has with what the framework builds.")
@@ -2073,8 +2103,8 @@ def draw_7_2(table, context, number):
                 str(years[0]): money_label(of_year(years[0], "total_usd")), str(years[1]): money_label(this_year),
                 str(years[2]): money_label(next_year), f"{years[2]} vs {years[1]}": growth(next_year, this_year),
                 "built share": f"{100 * of_year(years[2], 'built_usd') / next_year:.0f} %" if next_year else "—",
-                f"acquisition {years[2]}": money_label(of_year(years[2], "acquisition_usd")),
-                f"R2S {years[2]}": money_label(of_year(years[2], "retail_to_subscription_usd"))}
+                f"acq. due {years[2]} (sold {years[2] - 1})": money_label(of_year(years[2], "acquisition_usd")),
+                f"R2S re-entry pipeline {years[2]}": money_label(of_year(years[2], "retail_to_subscription_usd"))}
         subregions = pd.DataFrame(rows).T
         figure, axis = new_figure(15, 0.26 * len(subregions) + 1.6)
         annex_table(axis, subregions, font_size=7.5, first_column_width=0.25)
@@ -2095,6 +2125,8 @@ def draw_7_3(table, context, number):
                       alpha=0.85, linewidth=0)
     axes[0].plot(positions, total["renovado_12m_antes_usd"], color=INK, linewidth=1.6,
                  label="1-year renewals of 12 months before (real; expected from the current month)")
+    axes[0].plot(positions, total["renovado_12m_antes_usd"] + total["renovado_varios_anos_12m_antes_usd"], color=INK,
+                 linewidth=1.2, linestyle="--", label="+ the multi-year renewals of 12 months before (if they renew as 1 year)")
     mark_the_future(axes[0], months, context.current_month)
     month_axis(axes[0], months)
     money_axis(axes[0])
@@ -2103,7 +2135,12 @@ def draw_7_3(table, context, number):
                       color=INK, loc="left")
     ratio = (total["renewal_1y_usd"] + total["projected_renewal_usd"]) / total["renovado_12m_antes_usd"]
     current = pd.Period(context.current_month, freq="M")
-    axes[1].plot(positions, ratio, color=BLUE, linewidth=1.8, marker="o", markersize=2.5)
+    ratio_with_multi_year = ((total["renewal_1y_usd"] + total["projected_renewal_usd"])
+                             / (total["renovado_12m_antes_usd"] + total["renovado_varios_anos_12m_antes_usd"]))
+    axes[1].plot(positions, ratio, color=BLUE, linewidth=1.8, marker="o", markersize=2.5, label="over the 1-year renewals")
+    axes[1].plot(positions, ratio_with_multi_year, color=INK_MUTED, linewidth=1.4, linestyle="--",
+                 label="over the 1-year + multi-year renewals")
+    axes[1].legend(fontsize=8, frameon=False, loc="lower left")
     axes[1].axhline(1, color=INK_MUTED, linewidth=0.8)
     mark_the_future(axes[1], months, context.current_month, label=False)
     month_axis(axes[1], months)
@@ -2112,8 +2149,9 @@ def draw_7_3(table, context, number):
     renewal_months = months - 12
     closed = renewal_months < current
     real_ratio = ratio[np.asarray(closed)]
-    rows = {"renewed 12 months before": "renovado_12m_antes_usd", COMPONENTS["renewal_1y"][0]: "renewal_1y_usd",
-            COMPONENTS["projected_renewal"][0]: "projected_renewal_usd"}
+    rows = {"renewed 12 months before (1 year)": "renovado_12m_antes_usd",
+            "renewed 12 months before (multi-year)": "renovado_varios_anos_12m_antes_usd",
+            COMPONENTS["renewal_1y"][0]: "renewal_1y_usd", COMPONENTS["projected_renewal"][0]: "projected_renewal_usd"}
     annex = yearly_annex(total, rows)
     by_year = total.groupby(total["_month"].map(lambda month: month.year))
     ratios = (by_year["renewal_1y_usd"].sum() + by_year["projected_renewal_usd"].sum()) / by_year["renovado_12m_antes_usd"].sum()
@@ -2142,7 +2180,73 @@ def draw_7_3(table, context, number):
         axis.set_title(str(name), fontsize=10, color=INK, loc="left")
     titles(figure, f"{number}a · Pipeline over renewed 12 months before, by region", "Same scale in every panel.")
     paths.append(save(figure, chart_path(context, number, "renovado_vuelve_por_region"), top=0.9))
+    paths.append(draw_what_the_projection_misses(table, context, number))
     return paths
+
+
+def real_ratio_of(rows: pd.DataFrame, months: list) -> dict:
+    """The real ratio of a set of pipeline months: their 1-year renewal pipeline over what renewed 12 months before,
+    in 1 year and with the multi-year renewals too."""
+    chosen = rows[rows["_month"].isin(months)]
+    renewed_one_year = chosen["renovado_12m_antes_usd"].sum()
+    renewed_multi_year = chosen["renovado_varios_anos_12m_antes_usd"].sum()
+    pipeline = chosen["renewal_1y_usd"].sum() + chosen["projected_renewal_usd"].sum()
+    return {"ratio": safe_ratio(pipeline, renewed_one_year),
+            "ratio_with_multi_year": safe_ratio(pipeline, renewed_one_year + renewed_multi_year),
+            "multi_year_share": safe_ratio(renewed_multi_year, renewed_one_year)}
+
+
+def draw_what_the_projection_misses(table, context, number) -> str:
+    """The projected renewals come back at exactly what they renew (ratio 1). The real pipeline of the same months a
+    year before came back at its real ratio: above 1, the extract builds pipeline that the projection does not (a
+    multi-year licence that renews as 1 year, a customer that comes back…). At the real ratio of the same months,
+    what would the projection build, per region and subregion?"""
+    current = pd.Period(context.current_month, freq="M")
+    groups = pd.concat([region_rows(table), total_rows(table)])
+    if context.subregion:
+        fine = table[table["orden_region"] == 0].copy()
+        fine[context.region] = fine[context.region].astype(str) + " · " + fine[context.subregion].astype(str)
+        groups = pd.concat([groups, fine])
+    annex = {}
+    for name, block in groups.groupby(context.region, sort=False):
+        block = as_months(block)
+        projected = block[block["projected_renewal_usd"] > 0]
+        projected_months = list(projected["_month"])
+        if not projected_months:
+            continue
+        same_months_before = [month - 12 for month in projected_months]
+        last_closed = [month for month in block["_month"] if current <= month + 0 and month - 12 < current]
+        same = real_ratio_of(block, same_months_before)
+        last_twelve = real_ratio_of(block, last_closed[-12:])
+        projected_usd = float(projected["projected_renewal_usd"].sum())
+        # the real ratio also carries the retail to subscription that converted 12 months before (its pipeline is
+        # inside the renewals of the extract); for next year it is built apart (step 6.1): not counted twice
+        reentry_usd = float(projected["r2s_reentrada_usd"].sum())
+        extra = projected_usd * (same["ratio"] - 1) if np.isfinite(same["ratio"]) else np.nan
+        missing = extra - reentry_usd if np.isfinite(extra) else np.nan
+        annex[str(name)] = {
+            f"projected renewals {context.next_year}": money_label(projected_usd),
+            "real ratio, same months a year before": ratio_text(same["ratio"]),
+            "real ratio, last 12 months": ratio_text(last_twelve["ratio"]),
+            "with multi-year renewals": ratio_text(same["ratio_with_multi_year"]),
+            "multi-year / 1-year renewed": percent_text(same["multi_year_share"], 0),
+            "extra at the real ratio": money_label(extra),
+            "R2S re-entry already built": money_label(reentry_usd),
+            "missing": money_label(missing),
+            "_missing": missing}
+    annex = pd.DataFrame(annex).T
+    total_missing = annex.loc[TOTAL_LABEL, "_missing"] if TOTAL_LABEL in annex.index else np.nan
+    shown = annex.drop(columns=["_missing"])
+    region_count = region_rows(table)[context.region].nunique()
+    write_annex(context, number, "lo_que_falta", shown)
+    figure, axis = new_figure(15, 0.3 * min(len(shown), region_count + 1) + 2.4)
+    annex_table(axis, shown.head(region_count + 1), font_size=8, first_column_width=0.16)
+    titles(figure, f"{number}b · What the projected renewals miss if the real ratio holds",
+           f"The projection brings back exactly what renews (ratio 1). At the real ratio of the same months a year before, "
+           f"and without the retail to subscription re-entry the framework already builds apart, next year would have "
+           f"{money_label(abs(total_missing))} {'more' if total_missing >= 0 else 'less'} pipeline. 'With multi-year renewals' "
+           f"near 1 says the extra comes from multi-year licences that renew as 1 year. The subregions are in the CSV of the annex.")
+    return save(figure, chart_path(context, number, "lo_que_falta_a_la_proyeccion"), top=0.85)
 
 
 def draw_7_4(table, context, number):
@@ -2238,6 +2342,12 @@ def draw_7_4(table, context, number):
 #        months, today and at due date in the future (a state without a maturation curve keeps today's share)
 #   8.7  does the horizon of more than a year fall short? The rate predicted for every future month by months
 #        ahead, against the real rate of the same month a year and two years before, and the exam by horizon
+#   8.8  which region has the most favourable composition? Its pipeline at the yields of the whole portfolio, by
+#        segment and by every dimension alone (product, term, band, renewal type, states, acquisition, price increase)
+#   8.9  where a price increase was detected, and since when: the detector of every price group month by month and
+#        the calendar of the increases, to compare with the tariff changes that were made
+#   8.10 which term do the licences renew to? The share of every destination term and its uplift, month by month
+#        (with the six columns of the term transitions in the extract)
 #
 # THE MONEY OF A ROW, the same in every question (USD):
 #   pipeline   forecast_to_renew_USD_at_due: what falls due, after the maturation of the states (same total)
@@ -2694,12 +2804,14 @@ def draw_8_2(table, context, number):
 def sql_8_3(context: ReportContext) -> str:
     """8.3 · the uplift month by month of every year, with and without the rows inside a price increase."""
     period = context.configuration.period_col
+    increases = price_increase_lookup(context)
     base = f"""SELECT {level_columns(context)}, n.forecast_year AS anio, CAST(SUBSTRING(n.{period}, 6, 2) AS INT) AS mes,
        n.{period} AS periodo,
-       {inside_price_increase(context)} AS en_subida,
+       {increases.flag} AS en_subida,
        {renewal_base_usd(context)} AS base_usd,
        COALESCE(n.forecast_renewed_USD, 0) AS renovado_usd
 FROM {context.core} n
+{increases.join}
 WHERE {in_pipeline_sources()} AND n.forecast_year >= {context.current_year - 3}"""
     measures = ["SUM(base_usd) AS base_usd", "SUM(renovado_usd) AS renovado_usd",
                 "SUM(CASE WHEN en_subida = 1 THEN base_usd ELSE 0 END) AS base_en_subida_usd",
@@ -2707,7 +2819,7 @@ WHERE {in_pipeline_sources()} AND n.forecast_year >= {context.current_year - 3}"
                 "SUM(renovado_usd) / NULLIF(SUM(base_usd), 0) AS uplift",
                 "SUM(CASE WHEN en_subida = 0 THEN renovado_usd ELSE 0 END) / "
                 "NULLIF(SUM(CASE WHEN en_subida = 0 THEN base_usd ELSE 0 END), 0) AS uplift_sin_subida"]
-    return with_subtotals(context, base, measures, ["anio", "mes", "periodo"],
+    return with_subtotals(context, base, measures, ["anio", "mes", "periodo"], ctes=increases.ctes,
                           comment="8.3 · el uplift mes a mes de cada año, con y sin las filas dentro de una subida de precio")
 
 
@@ -2789,12 +2901,15 @@ def sql_8_4(context: ReportContext) -> str:
     dims = price_reference_dims(context)
     dim_columns = ", ".join(f"n.{column} AS {key}" for key, column in dims.items())
     keys = ", ".join(dims) + ", anio, periodo"
+    increases = price_increase_lookup(context)
+    increase_ctes = "".join(f"{name} AS (\n{textwrap.indent(sql.strip(), '    ')}\n),\n" for name, sql in increases.ctes)
     return f"""-- 8.4 · las combinaciones de referencia de precio (subregión × producto × plazo × banda) mes a mes
-WITH base AS (
+WITH {increase_ctes}base AS (
     SELECT {dim_columns}, n.forecast_year AS anio, n.{period} AS periodo,
-           {inside_price_increase(context)} AS en_subida,
+           {increases.flag} AS en_subida,
            {money_columns(context)}
     FROM {context.core} n
+    {increases.join}
     WHERE {in_pipeline_sources()} AND n.forecast_year >= {context.current_year - 3}
 )
 SELECT {keys},
@@ -3183,6 +3298,370 @@ def horizon_exam(context: ReportContext) -> pd.DataFrame:
 
 
 
+# ─── 8.8 · which region has the most favourable composition ─────────────────────
+# THE QUESTION: two regions with the same pipeline do not bring the same money if one has more of what renews at more
+# value (a product, a term, a band, auto renewal), less of the customer states, or more pipeline still inside a price
+# increase. The composition of a region is judged at the yields of the whole portfolio:
+#   composition index of a region = Σ its pipeline of a segment × the yield of that segment in the portfolio
+#                                   / its pipeline / the yield of the portfolio
+#   (yield = renewed / pipeline, the rate and the uplift together; 1 = the composition of the portfolio, above 1 a
+#   composition that renews more, below 1 one that renews less)
+#   actual index = the yield of the region / the yield of the portfolio
+#   performance  = actual / composition: how the region renews against what its composition promises
+# The index of one dimension uses that dimension alone (its values at the yields of the portfolio): it says WHICH part
+# of the composition helps or hurts. The pipeline is the one at due date, so the customer states are already matured.
+COMPOSITION_INDEX_DIMS_ORDER = ["product", "term", "band", "renewal_type", "acquisition", "price_increase"]
+
+
+def composition_segment_columns(context: ReportContext) -> dict:
+    """The columns that make a segment of the composition: name in the query → SQL expression over the core."""
+    configuration = context.configuration
+    columns = {}
+    if context.product:
+        columns["product"] = f"n.{context.product}"
+    if configuration.term_column and configuration.term_column in context.core_columns:
+        columns["term"] = f"n.{configuration.term_column}"
+    if BAND_COLUMN in context.core_columns:
+        columns["band"] = f"n.{BAND_COLUMN}"
+    if "tr_renewal_type" in context.core_columns:
+        columns["renewal_type"] = "n.tr_renewal_type"
+    for state in context.states:
+        columns[state] = f"n.{state}"
+    columns["acquisition"] = f"CASE WHEN {is_acquisition(context)} THEN 1 ELSE 0 END"
+    return columns
+
+
+def sql_8_8(context: ReportContext) -> str:
+    """8.8 · the pipeline, base and renewed of every region and segment, the current year and the next one."""
+    increases = price_increase_lookup(context)
+    segments = composition_segment_columns(context)
+    segment_select = ",\n           ".join(f"{expression} AS {name}" for name, expression in segments.items())
+    levels = [context.region] + ([context.subregion] if context.subregion else [])
+    keys = ", ".join(levels + ["anio"] + list(segments) + ["price_increase"])
+    increase_ctes = "".join(f"{name} AS (\n{textwrap.indent(sql.strip(), '    ')}\n),\n" for name, sql in increases.ctes)
+    return f"""-- 8.8 · la composición de cada región por segmento (producto, plazo, banda, tipo de renovación, estados,
+--       adquisición y subida de precio), {context.current_year} y {context.next_year}
+WITH {increase_ctes}base AS (
+    SELECT {level_columns(context)}, n.forecast_year AS anio,
+           {segment_select},
+           {increases.flag} AS price_increase,
+           {due_usd()} AS pipeline_usd,
+           {renewal_base_usd(context)} AS base_usd,
+           COALESCE(n.forecast_renewed_USD, 0) AS renovado_usd
+    FROM {context.core} n
+    {increases.join}
+    WHERE {in_pipeline_sources()} AND n.forecast_year IN ({context.current_year}, {context.next_year})
+)
+SELECT {keys},
+       SUM(pipeline_usd) AS pipeline_usd, SUM(base_usd) AS base_usd, SUM(renovado_usd) AS renovado_usd
+FROM base
+GROUP BY {keys}
+ORDER BY {keys};"""
+
+
+def composition_indexes(of_year: pd.DataFrame, group_column: str, segment_dims: list) -> pd.DataFrame:
+    """For one year: per group (region or subregion) its composition index with every segment, with every dimension
+    alone, the index of the rate and of the uplift, its actual index and its performance."""
+    frame = of_year.copy()
+    frame["_segment"] = frame[segment_dims].astype(str).agg("|".join, axis=1)
+    portfolio = {"pipeline": frame["pipeline_usd"].sum(), "base": frame["base_usd"].sum(), "renewed": frame["renovado_usd"].sum()}
+    portfolio_yield = safe_ratio(portfolio["renewed"], portfolio["pipeline"])
+    portfolio_rate = safe_ratio(portfolio["base"], portfolio["pipeline"])
+    portfolio_uplift = safe_ratio(portfolio["renewed"], portfolio["base"])
+
+    def at_portfolio_values(key_columns, value: str, weight: str) -> pd.Series:
+        """Σ weight of the group in a key × the portfolio's value of that key / Σ weight of the group."""
+        by_key = frame.groupby(key_columns)[["pipeline_usd", "base_usd", "renovado_usd"]].sum()
+        if value == "yield":
+            per_key = by_key["renovado_usd"] / by_key["pipeline_usd"].replace(0, np.nan)
+        elif value == "rate":
+            per_key = by_key["base_usd"] / by_key["pipeline_usd"].replace(0, np.nan)
+        else:
+            per_key = by_key["renovado_usd"] / by_key["base_usd"].replace(0, np.nan)
+        fallback = {"yield": portfolio_yield, "rate": portfolio_rate, "uplift": portfolio_uplift}[value]
+        weighted = frame.join(per_key.rename("_value").fillna(fallback), on=key_columns)
+        weighted["_weighted"] = weighted[weight] * weighted["_value"]
+        sums = weighted.groupby(group_column)[["_weighted", weight]].sum()
+        return sums["_weighted"] / sums[weight].replace(0, np.nan)
+
+    groups = frame.groupby(group_column)[["pipeline_usd", "base_usd", "renovado_usd"]].sum()
+    result = pd.DataFrame(index=groups.index)
+    result["pipeline_usd"] = groups["pipeline_usd"]
+    result["composition"] = at_portfolio_values("_segment", "yield", "pipeline_usd") / portfolio_yield
+    result["composition_rate"] = at_portfolio_values("_segment", "rate", "pipeline_usd") / portfolio_rate
+    result["composition_uplift"] = at_portfolio_values("_segment", "uplift", "base_usd") / portfolio_uplift
+    for dim in segment_dims:
+        result[dim] = at_portfolio_values(dim, "yield", "pipeline_usd") / portfolio_yield
+    result["actual"] = (groups["renovado_usd"] / groups["pipeline_usd"].replace(0, np.nan)) / portfolio_yield
+    result["performance"] = result["actual"] / result["composition"]
+    result["inside_increase_share"] = (frame[frame["price_increase"] == 1].groupby(group_column)["pipeline_usd"].sum()
+                                       .reindex(result.index).fillna(0) / result["pipeline_usd"])
+    return result
+
+
+def index_text(value: float) -> str:
+    return f"{100 * (value - 1):+.1f} %" if np.isfinite(value) else "—"
+
+
+def draw_8_8(table, context, number):
+    now, upcoming = context.current_year, context.next_year
+    segment_dims = [column for column in table.columns
+                    if column not in (context.region, context.subregion, "anio", "pipeline_usd", "base_usd", "renovado_usd")]
+    shown_dims = ([dim for dim in COMPOSITION_INDEX_DIMS_ORDER if dim in segment_dims]
+                  + [dim for dim in segment_dims if dim not in COMPOSITION_INDEX_DIMS_ORDER])
+    group_column = context.subregion or context.region
+    by_year = {year: composition_indexes(table[table["anio"] == year], group_column, segment_dims) for year in (now, upcoming)}
+    regions_by_year = {year: composition_indexes(table[table["anio"] == year], context.region, segment_dims)
+                       for year in (now, upcoming)}
+    paths = []
+
+    # the heat map of next year: every subregion (largest first) × every dimension alone, the whole composition,
+    # what it really renews and its performance; one point = 1 % more (or less) yield than the portfolio's
+    upcoming_index = by_year[upcoming].sort_values("pipeline_usd", ascending=False)
+    columns = shown_dims + ["composition", "actual", "performance"]
+    values = (upcoming_index[columns].to_numpy(dtype=float) - 1) * 100
+    figure, axis = new_figure(15, 0.32 * len(upcoming_index) + 2.6)
+    limit = max(1.0, np.nanpercentile(np.abs(values), 95)) if np.isfinite(values).any() else 1.0
+    colours = matplotlib.colors.LinearSegmentedColormap.from_list("composition", [ORANGE, "#fcfcfb", BLUE])
+    image = axis.imshow(values, aspect="auto", cmap=colours, vmin=-limit, vmax=limit)
+    for row in range(values.shape[0]):
+        for column in range(values.shape[1]):
+            if np.isfinite(values[row, column]):
+                axis.text(column, row, f"{values[row, column]:+.1f}", ha="center", va="center", fontsize=7, color=INK)
+    axis.set_xticks(range(len(columns)))
+    axis.set_xticklabels([label.replace("_", " ") for label in columns], fontsize=8, rotation=20, ha="right")
+    axis.set_yticks(range(len(upcoming_index)))
+    axis.set_yticklabels([f"{name} ({money_label(pipeline)})" for name, pipeline in upcoming_index["pipeline_usd"].items()],
+                         fontsize=7.5)
+    axis.axvline(len(shown_dims) - 0.5, color=INK, linewidth=1)
+    axis.grid(False)
+    figure.colorbar(image, ax=axis, fraction=0.02, pad=0.01).set_label("% against the portfolio", fontsize=8)
+    titles(figure, f"{number} · Which subregion has the most favourable composition in {upcoming}?",
+           "Every dimension alone at the yields of the whole portfolio (yield = renewed / pipeline): blue, a composition that "
+           "renews more than the portfolio's; orange, less. Composition: every dimension together; actual: what the "
+           "subregion renews; performance: actual against what its composition promises. Pipeline at due date: the states "
+           "already matured.")
+    paths.append(save(figure, chart_path(context, number, "composicion_por_subregion"), top=0.9))
+
+    # the regions: composition this year and next year, and what they really renew
+    regions_now, regions_next = regions_by_year[now], regions_by_year[upcoming]
+    names = list(regions_next.sort_values("pipeline_usd", ascending=False).index)
+    figure, axes = new_figure(15, 10, 2, 1, gridspec_kw={"height_ratios": [2.4, 2]})
+    positions = np.arange(len(names))
+    for offset, (label, frame, column, colour) in enumerate((
+            (f"composition {now}", regions_now, "composition", BLUE),
+            (f"composition {upcoming}", regions_next, "composition", ORANGE),
+            (f"actual {now}", regions_now, "actual", INK_MUTED),
+            (f"actual {upcoming}", regions_next, "actual", INK))):
+        heights = 100 * (frame.reindex(names)[column].to_numpy(dtype=float) - 1)
+        axes[0].bar(positions + (offset - 1.5) * 0.2, heights, 0.19, color=colour, label=label)
+    axes[0].axhline(0, color=INK_MUTED, linewidth=0.8)
+    axes[0].set_xticks(positions)
+    axes[0].set_xticklabels([str(name) for name in names], fontsize=9)
+    axes[0].yaxis.set_major_formatter(lambda value, _: f"{value:+.0f} %")
+    axes[0].legend(fontsize=8, frameon=False, ncol=4)
+    axes[0].set_title("Yield of the composition and actual yield against the portfolio (0 = the portfolio)",
+                      fontsize=10, color=INK, loc="left")
+    annex = {}
+    for name in names:
+        line = {}
+        for year, frame in ((now, regions_now), (upcoming, regions_next)):
+            row = frame.loc[name] if name in frame.index else None
+            if row is None:
+                continue
+            line[f"composition {year}"] = index_text(row["composition"])
+            line[f"rate {year}"] = index_text(row["composition_rate"])
+            line[f"uplift {year}"] = index_text(row["composition_uplift"])
+            line[f"actual {year}"] = index_text(row["actual"])
+            line[f"inside an increase {year}"] = percent_text(row["inside_increase_share"], 0)
+        best = regions_next.loc[name, shown_dims].astype(float) if name in regions_next.index else pd.Series(dtype=float)
+        if len(best.dropna()):
+            line[f"helps most {upcoming}"] = f"{best.idxmax()} {index_text(best.max())}"
+            line[f"hurts most {upcoming}"] = f"{best.idxmin()} {index_text(best.min())}"
+        annex[str(name)] = line
+    annex = pd.DataFrame(annex).T
+    annex_table(axes[1], annex, "Annex · composition (all, its rate and its uplift), actual, share of the pipeline inside "
+                                "a price increase, and the dimension that helps and hurts most", font_size=7,
+                first_column_width=0.08)
+    write_annex(context, number, "por_region", annex)
+    titles(figure, f"{number}a · The composition of every region, {now} and {upcoming}",
+           "A region whose composition worsens from one year to the next brings less money with the same pipeline; "
+           "one inside a price increase this year and not the next loses its step.")
+    paths.append(save(figure, chart_path(context, number, "composicion_por_region"), top=0.92))
+    pd.concat({str(year): frame for year, frame in by_year.items()}, names=["anio", group_column]).to_csv(
+        os.path.join(context.output_folder, f"{number.replace('.', '_')}_anexo_por_subregion.csv"))
+    return paths
+
+
+# ─── 8.9 · where a price increase was detected, and since when ──────────────────
+# THE QUESTION: did the framework see the price increases there were? Step 8.4 writes the detector month by month
+# (sff_price_increase_monitor: per price group, the uplift of the isolated renewals, the average of its previous 12
+# months and the step over it) and one row per increase it confirmed (sff_price_increase_calendar: the first month
+# of the step, its size, the uplift before and in the cycle). An increase is a month price_step_threshold or more above
+# the average of its previous 12, price_persistence_months months in a row, in a group with
+# price_group_min_renewed_units renewals a month. The chart puts every group with an increase next to its detector,
+# so the dates can be compared with the tariff changes that were made.
+TABLE_PRICE_INCREASE_MONITOR = "price_increase_monitor"
+PRICE_INCREASE_GROUPS_DRAWN = 12             # the groups with the most money renewed inside their increases
+
+
+def sql_8_9(context: ReportContext) -> Optional[str]:
+    """8.9 · the detector of the price increases, month by month, for every price group (step 8.4)."""
+    if not context.has_table(TABLE_PRICE_INCREASE_MONITOR):
+        return None
+    monitor = table_in_sql(context.configuration, TABLE_PRICE_INCREASE_MONITOR)
+    return f"""-- 8.9 · el detector de subidas de precio mes a mes por grupo de precio (paso 8.4)
+SELECT *
+FROM {monitor}
+ORDER BY price_group, period;"""
+
+
+def draw_8_9(table, context, number):
+    configuration = context.configuration
+    calendar = (pd.read_sql(f"SELECT * FROM {table_in_sql(configuration, TABLE_PRICE_INCREASE_CALENDAR)}", context.engine)
+                if context.has_table(TABLE_PRICE_INCREASE_CALENDAR) else pd.DataFrame())
+    paths = []
+    cycle = configuration.price_cycle_months
+    if len(calendar):
+        calendar["inicio"] = pd.PeriodIndex(calendar["inicio"].astype(str), freq="M")
+        calendar["fin"] = calendar["inicio"] + (cycle - 1)
+    # the groups drawn: the ones with an increase, the most money renewed inside it first
+    if len(calendar):
+        ranking = calendar.groupby("price_group")["usd_renovado_ciclo"].sum().sort_values(ascending=False)
+        groups = list(ranking.index[:PRICE_INCREASE_GROUPS_DRAWN])
+    else:
+        groups = []
+    monitor = table.copy()
+    monitor["_month"] = pd.PeriodIndex(monitor["period"].astype(str), freq="M")
+    if groups:
+        figure, axes = small_multiples(groups, height_per_row=3.0, same_scale=False)
+        for axis, group in zip(axes, groups):
+            of_group = monitor[monitor["price_group"] == group].sort_values("_month")
+            months = pd.PeriodIndex(of_group["_month"])
+            positions = np.arange(len(of_group))
+            detector = of_group["uplift_isolated"] if of_group["uplift_isolated"].notna().any() else of_group["uplift"]
+            axis.plot(positions, of_group["uplift"], color=INK_MUTED, linewidth=1, label="uplift (every renewal)")
+            axis.plot(positions, detector, color=INK, linewidth=1.6, label="uplift the detector reads (isolated renewals)")
+            axis.plot(positions, of_group["uplift_previous_12"], color=BLUE, linewidth=1.2, linestyle="--",
+                      label="average of the previous 12 months")
+            increases_of_group = calendar[calendar["price_group"] == group].sort_values("inicio")
+            for order, (_, increase) in enumerate(increases_of_group.iterrows()):
+                inside = [position for position, month in enumerate(months) if increase["inicio"] <= month <= increase["fin"]]
+                if inside:
+                    axis.axvspan(inside[0] - 0.5, inside[-1] + 0.5, color=ORANGE, alpha=0.15, linewidth=0, zorder=0)
+                    # one label under the other, so two increases close in time can be read
+                    axis.annotate(f"{increase['inicio']} {increase['escalon']:+.1%}", (inside[0], 1.0 - 0.08 * order),
+                                  xycoords=("data", "axes fraction"), fontsize=7, color=ORANGE, va="top")
+            month_axis(axis, months, compact=True)
+            axis.set_title(str(group).replace("|", " · "), fontsize=8, color=INK, loc="left")
+        figure.legend(*axes[0].get_legend_handles_labels(), fontsize=8, frameon=False, loc="upper right", ncol=3,
+                      bbox_to_anchor=(0.99, 0.9))
+        titles(figure, f"{number} · Where a price increase was detected, and since when",
+               f"Orange: the {cycle} months of every increase (its first month and its step written above). An increase is a "
+               f"month {configuration.price_step_threshold:.0%} or more above the average of its previous 12 months, "
+               f"{configuration.price_persistence_months} months in a row, in a group with "
+               f"{configuration.price_group_min_renewed_units:,.0f} renewals a month or more. Price group: "
+               f"{' × '.join(configuration.price_group_dims) or 'the portfolio'}.")
+        paths.append(save(figure, chart_path(context, number, "subidas_detectadas"), top=0.88))
+
+    # the annex: every increase of the calendar, the most recent first
+    if len(calendar):
+        annex = calendar.sort_values(["inicio", "escalon"], ascending=[False, False])
+        annex = pd.DataFrame({"price group": annex["price_group"].astype(str).str.replace("|", " · ", regex=False),
+                              "from": annex["inicio"].astype(str), "to": annex["fin"].astype(str),
+                              "step": annex["escalon"].map(lambda value: f"{value:+.1%}"),
+                              "uplift before": annex["uplift_antes"].map(ratio_text),
+                              "uplift in the cycle": annex["uplift_ciclo"].map(ratio_text),
+                              "months seen": annex["meses_vistos"].astype(int),
+                              "USD renewed in the cycle": annex["usd_renovado_ciclo"].map(money_label)}).set_index("price group")
+    else:
+        annex = pd.DataFrame({"note": ["no increase in the calendar of this run"]}, index=["—"])
+    figure, axis = new_figure(15, 0.27 * len(annex) + 1.8)
+    annex_table(axis, annex, font_size=7.5, first_column_width=0.3)
+    titles(figure, f"{number}a · Annex · every price increase detected (sff_price_increase_calendar)",
+           "Compare the dates with the tariff changes that were made: an increase made and not here is one the detector "
+           "did not see (too small, or too few renewals in its group).")
+    paths.append(save(figure, chart_path(context, number, "calendario_de_subidas"), top=0.94))
+    write_annex(context, number, "calendario_de_subidas", annex)
+    return paths
+
+
+# ─── 8.10 · the term a licence renews to ────────────────────────────────────────
+# THE QUESTION: of what renews, how much renews to 1, 2 or 3 years, and at what uplift? A 1-year licence that renews
+# to 2 years brings more money this year and a gap next year; a 2-year licence that renews to 1 year brings pipeline
+# next year at a lower price. Read from the six columns of the term transitions in the closed months of the core (the
+# step 7.2 projects with their share of the last term_transition_window_months months: sff_transiciones_plazo).
+def sql_8_10(context: ReportContext) -> Optional[str]:
+    """8.10 · the renewals of every closed month by origin term and destination term: units, USD and the base."""
+    destinations = [short_name for short_name, _ in TERM_DESTINATIONS]
+    needed = [f"{CORE_RENEWED_UNITS_TO_PREFIX}{name}" for name in destinations] + [f"{CORE_RENEWED_USD_TO_PREFIX}{name}" for name in destinations]
+    term_column = context.configuration.term_column
+    if not term_column or not all(column in context.core_columns for column in needed):
+        return None
+    period = context.configuration.period_col
+    columns = []
+    for name in destinations:
+        units, usd = f"n.{CORE_RENEWED_UNITS_TO_PREFIX}{name}", f"n.{CORE_RENEWED_USD_TO_PREFIX}{name}"
+        columns += [f"COALESCE({units}, 0) AS unidades_a_{name}", f"COALESCE({usd}, 0) AS usd_a_{name}",
+                    f"COALESCE({units}, 0) * COALESCE(n.forecast_to_renew_USD, 0) / NULLIF(n.forecast_to_renew_units, 0) "
+                    f"AS base_a_{name}"]
+    base = f"""SELECT {level_columns(context)}, n.forecast_year AS anio, n.{period} AS periodo,
+       n.{term_column} AS plazo_origen,
+       {(',' + chr(10) + '       ').join(columns)}
+FROM {context.core} n
+WHERE n.forecast_status = 'actual' AND n.forecast_universe = 'pipeline'"""
+    measures = []
+    for name in destinations:
+        measures += [f"SUM(unidades_a_{name}) AS unidades_a_{name}", f"SUM(usd_a_{name}) AS usd_a_{name}",
+                     f"SUM(base_a_{name}) AS base_a_{name}",
+                     f"SUM(usd_a_{name}) / NULLIF(SUM(base_a_{name}), 0) AS uplift_a_{name}"]
+    return with_subtotals(context, base, measures, ["anio", "periodo", "plazo_origen"],
+                          comment="8.10 · a qué plazo renuevan las licencias: por plazo de origen y de destino, mes a mes")
+
+
+def draw_8_10(table, context, number):
+    destinations = [short_name for short_name, _ in TERM_DESTINATIONS]
+    total = total_rows(table).copy()
+    total["plazo_origen"] = total["plazo_origen"].astype(str)
+    origins = sorted(total["plazo_origen"].unique())
+    if not origins:
+        return []
+    destination_colours = {"1y": BLUE, "2y": AQUA, "3y": VIOLET}
+    figure, axes = new_figure(15, 3.2 * len(origins) + 3, len(origins) + 1, 1,
+                              gridspec_kw={"height_ratios": [2.4] * len(origins) + [2.2]})
+    annex = {}
+    for axis, origin in zip(axes, origins):
+        of_origin = as_months(total[total["plazo_origen"] == origin])
+        months = pd.PeriodIndex(of_origin["_month"])
+        units = of_origin[[f"unidades_a_{name}" for name in destinations]].sum(axis=1).replace(0, np.nan)
+        for name in destinations:
+            axis.plot(np.arange(len(of_origin)), of_origin[f"unidades_a_{name}"] / units, color=destination_colours[name],
+                      linewidth=1.8, label=f"renews to {name.replace('y', ' year')}{'s' if name != '1y' else ''}")
+        month_axis(axis, months)
+        percent_axis(axis)
+        axis.set_ylim(0, 1)
+        axis.set_title(f"From {origin}: share of the renewed units by the term they renew to", fontsize=10, color=INK, loc="left")
+        by_year = of_origin.groupby("anio")[[f"{kind}_a_{name}" for name in destinations for kind in ("unidades", "usd", "base")]].sum()
+        for year, row in by_year.iterrows():
+            renewed_units = sum(row[f"unidades_a_{name}"] for name in destinations)
+            line = {}
+            for name in destinations:
+                share = safe_ratio(row[f"unidades_a_{name}"], renewed_units)
+                line[f"to {name}: share · uplift"] = f"{percent_text(share, 0)} · {ratio_text(safe_ratio(row[f'usd_a_{name}'], row[f'base_a_{name}']))}"
+                line[f"to {name}: USD"] = money_label(row[f"usd_a_{name}"])
+            annex[f"from {origin} · {int(year)}"] = line
+    axes[0].legend(fontsize=8, frameon=False, loc="center left")
+    annex = pd.DataFrame(annex).T
+    annex_table(axes[-1], annex, "Annex · per origin term and year: the share of the renewed units to every term, its uplift "
+                                 "(USD renewed / USD due of those units) and its USD", font_size=7, first_column_width=0.14)
+    write_annex(context, number, "transiciones", annex)
+    titles(figure, f"{number} · Which term do the licences renew to?",
+           "A 1-year licence that renews to 2 or 3 years brings more money now and leaves a gap next year; one of 2 or 3 "
+           "years that renews to 1 year comes back next year at its own uplift. Step 7.2 projects with the share of the "
+           f"last {context.configuration.term_transition_window_months} closed months (sff_transiciones_plazo).")
+    return [save(figure, chart_path(context, number, "transiciones_de_plazo"), top=0.93)]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # THE QUESTIONS, IN THE ORDER OF THE STORY
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -3265,6 +3744,11 @@ QUESTIONS = [
     Question("8.6", CHAPTER_NEXT_YEAR, "¿Maduran bien los estados del cliente (dormant, softcancel, no instalado)?",
              "maduracion_de_los_estados", sql_8_6, draw_8_6),
     Question("8.7", CHAPTER_NEXT_YEAR, "¿Se queda corto el horizonte de más de un año?", "horizonte", sql_8_7, draw_8_7),
+    Question("8.8", CHAPTER_NEXT_YEAR, "¿Qué región tiene la composición más favorable?", "composicion_por_region",
+             sql_8_8, draw_8_8),
+    Question("8.9", CHAPTER_NEXT_YEAR, "¿Dónde se han detectado subidas de precio y desde cuándo?", "subidas_detectadas",
+             sql_8_9, draw_8_9),
+    Question("8.10", CHAPTER_NEXT_YEAR, "¿A qué plazo renuevan las licencias?", "transiciones_de_plazo", sql_8_10, draw_8_10),
 ]
 
 
@@ -3332,6 +3816,7 @@ def report(configuration: Config, which: list = None, acquisition_plan_units: Op
     for question in QUESTIONS:
         if which and question.number not in which:
             continue
+        started = time.time()
         try:
             with matplotlib.rc_context({"text.parse_math": False}):       # "$" in a label is a dollar, not maths
                 result = answer(question, context)
@@ -3339,7 +3824,7 @@ def report(configuration: Config, which: list = None, acquisition_plan_units: Op
             result = Answer(question, note=f"falló: {type(error).__name__}: {error}")
         answers[question.number] = result
         status = (f"{len(result.table)} filas · {len(result.charts)} gráficos" + (f" · {result.note}" if result.note else "")
-                  if result.table is not None else result.note)
+                  if result.table is not None else result.note) + f" · {time.time() - started:.0f} s"
         print(f"[informe] {question.number} {question.title} → {status}")
         if show and running_in_notebook() and result.charts:
             from IPython.display import Image, display

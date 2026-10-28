@@ -238,3 +238,43 @@ El test lo comprueba: los conceptos suman el total, y el total es el de `sff_res
 - volumen + mezcla + rendimiento es el cambio de cada dimensión;
 - las tasas están entre 0 y 1;
 - cada mes futuro tiene su horizonte.
+
+## 10 · Qué región tiene la composición más favorable (8.8) y un informe más rápido (añadido el 28-oct-2026)
+
+**8.8 · ¿Qué región tiene la composición más favorable?** Dos regiones con la misma pipeline no traen el mismo dinero si una tiene más de lo que renueva a más valor: un producto, un plazo, una banda o la autorrenovación; menos estados del cliente; o más pipeline dentro de una subida de precio. Cada región se mide a los rendimientos de toda la cartera (rendimiento = renovado / pipeline, la tasa y el uplift juntos):
+
+- **índice de composición** = Σ su pipeline de cada segmento × el rendimiento de ese segmento en la cartera / su pipeline / el rendimiento de la cartera. 1 es la composición de la cartera; por encima, una composición que renueva más.
+- **índice de una dimensión**: lo mismo con esa dimensión sola (producto, plazo, banda, tipo de renovación, adquisición, subida de precio, dormant, softcancel, no instalado). Dice qué parte de la composición ayuda y cuál resta.
+- **real** = el rendimiento de la región / el de la cartera. **Desempeño** = real / composición: cómo renueva la región frente a lo que promete su composición.
+- La pipeline es la de la fecha de vencimiento, así que los estados ya están madurados.
+
+Gráficos:
+- un mapa de calor de 2027 por subregión × dimensión, más la composición completa, el real y el desempeño;
+- las regiones en 2026 y 2027.
+
+El anexo da, por región, la composición completa con su parte de tasa y de uplift, el real, la parte de la pipeline dentro de una subida y la dimensión que más ayuda y la que más resta.
+
+Test: ponderados por su pipeline, la composición y el rendimiento real de las regiones son los de la cartera.
+
+**El informe tardaba por las subidas de precio, no por los CSV.** Saber si una fila cae dentro del ciclo de una subida se hacía con un EXISTS fila a fila contra el calendario. En el parecido al real, 7.4 tardaba 168 s y 8.3, 72 s. Ahora los meses de cada ciclo se expanden una vez (una fila por grupo de precio y mes) y se cruzan por igualdad: 7.4 baja a 10 s y 8.3 a 6 s, con los mismos números. Los CSV no llegan a un segundo en total. El informe completo pasa de más de 6 minutos a unos 2 minutos en el parecido al real. Cada pregunta dice en pantalla los segundos que tarda, para ver cuál pesa con los datos reales; las 6.1 y 6.2 son las que más leen.
+
+## 11 · Lo que le falta a la proyección de renovaciones (7.3b) y etiquetas de 7.2 (añadido el 28-oct-2026)
+
+**7.3b · ¿Qué le falta a las renovaciones proyectadas si se mantiene el cociente real?** Las renovaciones proyectadas vuelven exactamente a lo que renuevan (cociente 1). La pipeline real del extracto vuelve a su cociente real: por encima de 1, el extracto crea pipeline que la proyección no crea; por ejemplo, una licencia de varios años que renueva como de 1 año, o un cliente que vuelve.
+
+Por región y subregión, la tabla da:
+- las renovaciones proyectadas del año que viene;
+- el cociente real de los mismos meses un año antes y el de los últimos 12 meses;
+- el cociente contando también las renovaciones de varios años de 12 meses antes. Si ese se acerca a 1, lo que sobra viene de licencias de varios años que renuevan a 1 año;
+- la pipeline que daría el cociente real, menos la reentrada del retail to subscription que el framework ya construye aparte (el cociente real la lleva dentro, porque esa pipeline va en las renovaciones del extracto), y lo que falta.
+
+7.3 dibuja además la línea de las renovaciones de 1 año más las de varios años de 12 meses antes, y su cociente.
+
+**7.2, etiquetas más claras:**
+- la adquisición es la de 1 año que **vence** en el año, vendida el año anterior. La de 2027 es la vendida en 2026 a 1 año; las de 2 y 3 años de los 25 M$ vencen en 2028–2029;
+- el retail to subscription de 7.2 es solo la pipeline de su reentrada: la reentrada de lo convertido de octubre a diciembre de 2026. Su ingreso de 2027, simulado para el año entero, no tiene pipeline y está en 4.3 y 8.1b.
+
+## 12 · 8.9 (subidas de precio detectadas) y 8.10 (transiciones de plazo) (añadido el 28-oct-2026)
+
+- **8.9 · ¿Dónde se han detectado subidas de precio y desde cuándo?** El detector del paso 8.4 para cada grupo de precio con alguna subida: la revalorización de las renovaciones aisladas frente a la media de sus 12 meses anteriores, con los 12 meses de cada subida en naranja, su inicio y su escalón. El anexo trae todas las subidas de `sff_price_increase_calendar` con sus fechas, para comparar con las subidas de tarifa que se hicieron.
+- **8.10 · ¿A qué plazo renuevan las licencias?** Con las seis columnas de las transiciones de plazo (`CAMBIO_transiciones_de_plazo.md`): por plazo de origen, la parte de cada destino mes a mes, su revalorización y su USD por año. Sin las columnas, la pregunta dice que no se puede responder.

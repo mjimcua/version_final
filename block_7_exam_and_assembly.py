@@ -37,7 +37,7 @@ from config import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, Config, DUE_UNI
                     DUE_USD_AT_DUE_COLUMN, GATE_LEVEL, MATURATION_ROW_COLUMN, METHOD_BASELINE, METHOD_DEFAULT,
                     METHOD_FRAMEWORK, PATH_CONTRACT, PATH_CONTRACT_NEUTRAL, PATH_STATISTICAL, PIPELINE_ORIGIN_COLUMN,
                     PIPELINE_PROJECTED, PIPELINE_REAL, PIPELINE_SIMULATED, RATE_COLUMN, RATE_FROM_POOL,
-                    ROLE_PROJECTION, ROLE_TEST, SERIES_ID_COLUMN, SYNTHETIC_COLUMN, TABLE_BUSINESS_SUMMARY,
+                    ROLE_PROJECTION, ROLE_TEST, SERIES_ID_COLUMN, SYNTHETIC_COLUMN, TABLE_BUSINESS_SUMMARY, TABLE_TERM_TRANSITIONS,
                     TABLE_FORECAST_MATURATION, TABLE_FORECAST_MONTH, TABLE_MATURATION_CURVE, TABLE_FORECAST_TOTAL, TABLE_PORTFOLIO_EXAM,
                     TABLE_PORTFOLIO_EXAM_SUMMARY, TABLE_SERIES_EXAM, TABLE_SERIES_EXAM_DETAIL, TOTAL_ORIGIN_EXPECTED,
                     TOTAL_ORIGIN_PROJECTED, TOTAL_ORIGIN_RENEWED, TOTAL_ORIGIN_SIMULATED, TOTAL_ORIGIN_TOTAL,
@@ -53,6 +53,8 @@ from block_5_future_pipeline import FuturePipeline, carried_columns, inactive_va
 from block_6_time_series import TimeSeriesUniverse
 from prediction import index_history, months_known, predict_composition
 from price_increases import increase_factor, price_group_of
+from term_transitions import (LEVEL_COLUMN, ORIGIN_YEARS_COLUMN, learn_term_transitions, shares_of_rows,
+                              transitions_add_up)
 from report_queries import exam_by_month_query, exam_summary_query, forecast_total_query
 from techniques import CATALOGUE, logit
 
@@ -603,9 +605,19 @@ def errors_of_the_total(detail: pd.DataFrame, methods: list, configuration: Conf
 #       month (WARN: the extract sets the state too early, e.g. a fresh cohort set to dormant; the detector says
 #       which months and what it costs the forecast)
 #    8-10. tables sff_forecast_mes, sff_resumen_negocio, sff_forecast_maduracion written and read back
+#    with the term transitions (28-oct-2026): the destination term is known for at least
+#    term_transition_known_share_min of the renewed units of the closed months (WARN), and sff_transiciones_plazo
+#    written and read back
+#
+# THE TERM TRANSITIONS (term_transitions.py, with the six columns renewed_units_to_1y_col … renewed_usd_to_3y_col):
+# the renewal of every licence due in the window is split by the share of every destination term of its group (the
+# last term_transition_window_months closed months, the first level of term_transition_levels with support): the part
+# to 1 year falls due again 12 months later at the value of its transition (units and USD shares apart), the part to 2
+# or 3 years leaves a gap, and the multi-year licences that renew to 1 year are projected too. The assumption is said
+# on screen (TRANSICIONES DE PLAZO). Without the columns, every 1-year licence renews to 1 year, as before.
 #
 # Output: (the forecast row by row, by month, by year) · tables sff_forecast_mes, sff_resumen_negocio,
-# sff_forecast_maduracion. The forecast row by row reaches sff_nucleo (step 8.3).
+# sff_forecast_maduracion (and sff_transiciones_plazo). The forecast row by row reaches sff_nucleo (step 8.3).
 
 # ─── the step ────────────────────────────────────────────────────────────────────
 STEP_7_2_LABEL = "7.2"
@@ -684,7 +696,8 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     #     forecast expects and fall due again 12 months later: built here, they need it) and the simulated acquisitions
     #     (the box of step 5.1); predicted with neutral states and then matured by the same box of the states (they
     #     have no maturation columns: the historical final share)
-    extension = rows_of_the_window(future, fine_table, future_pipeline, configuration)
+    transitions = learn_term_transitions(fine_table, configuration)
+    extension = rows_of_the_window(future, fine_table, future_pipeline, configuration, transitions)
     extension_table = pd.DataFrame()
     if len(extension):
         extension = predict_rows(extension, context, configuration)
@@ -698,6 +711,15 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
                                             f"{created[PIPELINE_ORIGIN_COLUMN].value_counts().to_dict() if len(created) else {}} rows · "
                                             f"${created[configuration.pipeline_usd_col].sum() if len(created) else 0:,.0f} due · "
                                             f"${extension['esperado_usd'].sum() if len(extension) else 0:,.0f} expected (matured)")
+
+    if configuration.term_transitions_declared:
+        projected_rows = created[created[PIPELINE_ORIGIN_COLUMN] == PIPELINE_PROJECTED] if len(created) else created
+        configuration.log_action(STEP_7_2_LABEL, 7, "term transitions (the share of every destination of the last "
+                                 f"{configuration.term_transition_window_months} closed months): the projected renewals come "
+                                 f"from licences of " + ", ".join(
+                                     f"{int(years)} year{'s' if years > 1 else ''} ${usd:,.0f}" for years, usd in
+                                     projected_rows.groupby("_plazo_origen_anos")[configuration.pipeline_usd_col].sum().items())
+                                 if len(projected_rows) and "_plazo_origen_anos" in projected_rows else "term transitions: nothing projected")
 
     # the confidence of every row: how sure the forecast is of its rate
     future["confidence"] = confidence_of_rows(future, context, configuration)
@@ -730,6 +752,8 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     neutral_kept = future.loc[future[MATURATION_ROW_COLUMN] == 0, DUE_UNITS_AT_DUE_COLUMN] / future.loc[
         future[MATURATION_ROW_COLUMN] == 0, configuration.pipeline_units_col].where(lambda units: units > 0)
     check_the_projected_renewals(fine_table, configuration, check_log)
+    if configuration.term_transitions_declared:
+        check_the_term_transitions(fine_table, configuration, check_log)
     configuration.log_check(STEP_7_2_LABEL, check_log,
                             "the maturation moves units, it does not create them (Σ units and USD at due date = Σ due; "
                             "a row keeps between 0 and all of its units)",
@@ -764,6 +788,8 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     curves = curve_table(box, configuration)
     if len(curves):
         configuration.write_table(STEP_7_2_LABEL, check_log, curves, TABLE_MATURATION_CURVE)
+    if len(transitions):
+        configuration.write_table(STEP_7_2_LABEL, check_log, transitions, TABLE_TERM_TRANSITIONS)
 
     # [09] the count of the checks; stop if anything failed
     configuration.log_action(STEP_7_2_LABEL, 11, "counting the checks")
@@ -780,7 +806,11 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     if maturation is not None:
         show_maturation_by_month(maturation, box, configuration, STEP_7_2_LABEL)
         show_states_above_final(states_detector, configuration, STEP_7_2_LABEL)
+    if len(transitions):
+        show_term_transitions(transitions, configuration)
     result = dict(forecast=future, by_month=by_month, by_year=by_year)
+    if len(transitions):
+        result["term_transitions"] = transitions
     if maturation is not None:
         result["maturation"] = maturation
     return result
@@ -1251,23 +1281,49 @@ def add_the_exam_band(by_month: pd.DataFrame, by_year: pd.DataFrame, series_exam
 
 
 # ─── the projected renewals: the real pipeline still to fall due this year, renewed, falls due again next year ───
-def projected_renewals(future: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
-    """proyectada: every 1-year licence (term_column = one_year_term_value) of the extract due in the simulation window
-    renews as this forecast expects; its renewal falls due the same month next year with the same dims, units =
-    expected renewed units, value = expected renewed USD, discount renewal_reentry_discount (0). An acquisition that
-    renews is no longer one (acquisition_column → renewed_acquisition_value); the dims of dims_after_renewal take their
+def projected_renewals(future: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config,
+                       transitions: pd.DataFrame = None) -> pd.DataFrame:
+    """proyectada: the licences of the extract due in the simulation window renew as this forecast expects; the part
+    that renews to a 1-year licence falls due the same month next year with the same dims, units = its expected
+    renewed units, value = its expected renewed USD, discount renewal_reentry_discount (0). An acquisition that renews
+    is no longer one (acquisition_column → renewed_acquisition_value); the dims of dims_after_renewal take their
     declared value; the customer states are neutral (nothing is known yet of the renewal's dormant, softcancel…).
+
+    Which part renews to 1 year:
+      without the term transitions   every 1-year licence, all of it (the multi-year ones are not projected)
+      with them (28-oct-2026)        every licence, by the share of its group (term_transitions.py), in units and in
+                                     USD apart: a 1-year licence brings back its share 1 → 1 (the part 1 → 2 or 3 leaves
+                                     a gap), a 2- or 3-year one its share → 1; the row takes the term of 1 year
     Until 27-oct-2026 this was built in step 5.1; it belongs here because it is made of this forecast."""
     window = configuration.simulation_window
     if not window:
         return pd.DataFrame()
     period = configuration.period_col
     carried = [column for column in carried_columns(configuration, fine_table.columns) if column in future.columns]
-    renewing = future[future[period].isin(window) & is_one_year(future, configuration) & (future["esperado_unidades"] > 0)]
+    in_window = future[period].isin(window) & (future["esperado_unidades"] > 0)
+    if configuration.term_transitions_declared:
+        renewing = future[in_window]
+        shares = shares_of_rows(renewing, transitions, configuration)
+        units_back = renewing["esperado_unidades"].to_numpy() * shares["parte_unidades_a_1y"].to_numpy()
+        usd_back = renewing["esperado_usd"].to_numpy() * shares["parte_usd_a_1y"].to_numpy()
+        coming_back = units_back > 0
+        renewing, shares = renewing[coming_back], shares[coming_back]
+        units_back, usd_back = units_back[coming_back], usd_back[coming_back]
+    else:
+        renewing = future[in_window & is_one_year(future, configuration)]
+        units_back = renewing["esperado_unidades"].to_numpy()
+        usd_back = renewing["esperado_usd"].to_numpy()
     projected = renewing[carried].copy()
     projected[period] = renewing[period].to_numpy() + configuration.one_year_term_months
-    projected[configuration.pipeline_units_col] = renewing["esperado_unidades"].to_numpy()
-    projected[configuration.pipeline_usd_col] = renewing["esperado_usd"].to_numpy()
+    projected[configuration.pipeline_units_col] = units_back
+    projected[configuration.pipeline_usd_col] = usd_back
+    if configuration.term_transitions_declared and len(projected):
+        projected["_plazo_origen_anos"] = shares[ORIGIN_YEARS_COLUMN].to_numpy()
+        projected["_nivel_transicion"] = shares[LEVEL_COLUMN].to_numpy()
+        for column_name, value in one_year_term_values(fine_table, configuration).items():
+            if column_name in projected.columns:
+                projected[column_name] = projected[column_name].astype(object)
+                projected[column_name] = value
     if configuration.discount_value_column:
         projected[configuration.discount_value_column] = configuration.renewal_reentry_discount
     acquisition = configuration.acquisition_column
@@ -1286,11 +1342,23 @@ def projected_renewals(future: pd.DataFrame, fine_table: pd.DataFrame, configura
     return projected
 
 
+def one_year_term_values(fine_table: pd.DataFrame, configuration: Config) -> dict:
+    """The term of a 1-year licence and its generated levels (tr_term_level_1…), as the extract writes them: what a
+    multi-year licence that renews to 1 year takes."""
+    term_column = configuration.term_column
+    values = {term_column: configuration.one_year_term_value}
+    one_year_rows = fine_table[is_one_year(fine_table, configuration)]
+    for column_name in configuration.generated_columns:
+        if column_name.startswith(f"{term_column}_") and column_name in fine_table.columns and len(one_year_rows):
+            values[column_name] = one_year_rows[column_name].mode().iloc[0]
+    return values
+
+
 def rows_of_the_window(future: pd.DataFrame, fine_table: pd.DataFrame, future_pipeline: FuturePipeline,
-                       configuration: Config) -> pd.DataFrame:
+                       configuration: Config, transitions: pd.DataFrame = None) -> pd.DataFrame:
     """The rows the simulation window creates, with their ids and not predicted: the projected renewals (built here)
     and the simulated acquisitions (the box of step 5.1)."""
-    frames = [frame for frame in (projected_renewals(future, fine_table, configuration), future_pipeline.simulated)
+    frames = [frame for frame in (projected_renewals(future, fine_table, configuration, transitions), future_pipeline.simulated)
               if frame is not None and len(frame)]
     if not frames:
         return pd.DataFrame()
@@ -1315,6 +1383,38 @@ def check_the_projected_renewals(fine_table: pd.DataFrame, configuration: Config
                                                      f"{sorted(history_values[column_name])[:8]})"
                                                      for column_name, value in unseen.items()),
                             blocking=False, context=f"{after_renewal}" if after_renewal else "nothing declared")
+
+
+def check_the_term_transitions(fine_table: pd.DataFrame, configuration: Config, check_log: list) -> None:
+    """The destination term is known for (almost) every renewal of the closed months (WARN): the six columns add up to
+    the renewed units. Below, renewals to another term or the columns not filled in: the shares are learned on what
+    is known."""
+    known = transitions_add_up(fine_table, configuration)
+    configuration.log_check(STEP_7_2_LABEL, check_log,
+                            f"the destination term is known for at least {configuration.term_transition_known_share_min:.0%} "
+                            f"of the renewed units of the closed months (the term transitions add up to the renewed)",
+                            np.isfinite(known["units"]) and known["units"] >= configuration.term_transition_known_share_min,
+                            failure_detail=f"known for {known['units']:.1%} of the units and {known['usd']:.1%} of the USD",
+                            blocking=False, context=f"{known['known_units']:,.0f} of {known['renewed_units']:,.0f} renewed units")
+
+
+def show_term_transitions(transitions: pd.DataFrame, configuration: Config) -> None:
+    """The share of every destination of the whole portfolio by origin term, and how many groups of every level have
+    their own share, on screen (the table sff_transiciones_plazo has every group)."""
+    doc = configuration.logger.doc
+    doc(f"[{STEP_7_2_LABEL}] ══════════ TRANSICIONES DE PLAZO (de qué plazo a qué plazo renueva una licencia) ══════════")
+    doc(f"[{STEP_7_2_LABEL}] SUPUESTO: la pipeline proyectada usa la proporción de cada destino de los últimos "
+        f"{configuration.term_transition_window_months} meses cerrados, constante; cada grupo, en el primer nivel con "
+        f"{configuration.term_transition_min_renewed_units:,.0f} renovaciones o más: "
+        + " → ".join(" × ".join(level) if level else "cartera" for level in configuration.term_transition_levels))
+    portfolio = transitions[transitions["dims_del_nivel"] == "cartera"]
+    share_columns = [column for column in transitions.columns if column.startswith("parte_")]
+    shown = portfolio[[ORIGIN_YEARS_COLUMN, "renovadas_unidades", "renovado_usd"] + share_columns].copy()
+    shown[share_columns] = shown[share_columns].round(3)
+    configuration.show_table(shown)
+    levels = transitions.groupby("dims_del_nivel", sort=False)["con_soporte"].agg(grupos="size", con_soporte="sum").reset_index()
+    configuration.show_table(levels)
+    doc(f"[{STEP_7_2_LABEL}] ══════════ FIN DE TRANSICIONES DE PLAZO ══════════")
 
 
 def check_forecast(future: pd.DataFrame, fine_table: pd.DataFrame, by_month: pd.DataFrame,

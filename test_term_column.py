@@ -33,11 +33,36 @@ class TermSyntheticConfig(SyntheticConfig):
         return raw
 
 
-def term_configuration(term_column: str = "term"):
+# the term transitions of this test: of what renews, the share in units (and in USD) that renews to every term
+TRANSITION_SHARES = {"1 year": {"1y": (0.8, 0.7), "2y": (0.2, 0.3), "3y": (0.0, 0.0)},
+                     "3 year": {"1y": (0.4, 0.25), "2y": (0.0, 0.0), "3y": (0.6, 0.75)}}
+
+
+class TransitionsSyntheticConfig(TermSyntheticConfig):
+    """The same extract with the six columns of the term transitions: product A (1 year) renews 80 % of its units to 1
+    year (70 % of the USD) and the rest to 2 years; product B (3 years) 40 % to 1 year (25 % of the USD), the rest to 3."""
+    def read_raw(self) -> pd.DataFrame:
+        raw = super().read_raw()
+        for destination in ("1y", "2y", "3y"):
+            units_share = raw["term"].map({term: shares[destination][0] for term, shares in TRANSITION_SHARES.items()})
+            usd_share = raw["term"].map({term: shares[destination][1] for term, shares in TRANSITION_SHARES.items()})
+            raw[f"total_renewed_units_to_{destination}"] = raw["total_renewed_units"] * units_share
+            raw[f"total_renewed_usd_to_{destination}"] = raw["total_renewed_usd"] * usd_share
+        return raw
+
+
+TRANSITION_FIELDS = {f"renewed_{kind}_to_{destination}_col": f"total_renewed_{kind}_to_{destination}"
+                     for kind in ("units", "usd") for destination in ("1y", "2y", "3y")}
+
+
+def term_configuration(term_column: str = "term", with_transitions: bool = False):
     base = synthetic_with()
     arguments = {name: getattr(base, name) for name in base.__dataclass_fields__}
     arguments.update(business_mandatory_dims=list(base.business_mandatory_dims) + ["term"], term_column=term_column,
                      leveled_dims={"term": "ordinal"}, levels_path=os.path.join(tempfile.mkdtemp(), "levels.json"))
+    if with_transitions:
+        arguments.update(TRANSITION_FIELDS, term_transition_levels=[["product"], []], term_transition_min_renewed_units=1.0)
+        return TransitionsSyntheticConfig(**arguments)
     return TermSyntheticConfig(**arguments)
 
 
@@ -69,6 +94,36 @@ def test_the_term_column() -> None:
           "step 7.2 projects again only the 1-year licences")
 
 
+def test_the_term_transitions() -> None:
+    print("C · the term transitions: the projected renewals split by the term every licence renews to")
+    results = {}
+    configuration = term_configuration(with_transitions=True)
+    console = console_of(lambda: results.update(Orchestrator(configuration).run()))
+    forecast = results["forecast"]["forecast"]
+    window = configuration.simulation_window
+    renewing = forecast[forecast["period"].isin(window) & (forecast["origen_pipeline"] == "real") & (forecast["esperado_unidades"] > 0)]
+    projected = forecast[(forecast["origen_pipeline"] == "proyectada") & (forecast["fila_maduracion"] == 0)]
+    expected_units, expected_usd = 0.0, 0.0
+    for term, block in renewing.groupby(renewing["term"].astype(str)):
+        expected_units += block["esperado_unidades"].sum() * TRANSITION_SHARES[term]["1y"][0]
+        expected_usd += block["esperado_usd"].sum() * TRANSITION_SHARES[term]["1y"][1]
+    check(set(projected["term"].astype(str)) == {"1 year"}
+          and abs(projected["total_tr_units"].sum() - expected_units) <= 1e-6 * max(expected_units, 1)
+          and abs(projected["total_tr_usd"].sum() - expected_usd) <= 1e-6 * max(expected_usd, 1),
+          f"the projected renewals are the expected renewals × the share that renews to 1 year, in units and in USD: "
+          f"80 % / 70 % of the 1-year licences (the 20 % to 2 years is a gap) and 40 % / 25 % of the 3-year ones "
+          f"({projected['total_tr_units'].sum():,.0f} units, ${projected['total_tr_usd'].sum():,.0f})")
+    from_three_years = renewing[renewing["term"].astype(str) == "3 year"]
+    check(len(from_three_years) > 0 and "term transitions" in console and "from licences of 1 year" in console
+          and "3 years" in console,
+          "the 3-year licences due in the window that renew to 1 year are projected too, and step 7.2 says it")
+    table = results["forecast"]["term_transitions"]
+    portfolio = table[table["dims_del_nivel"] == "cartera"].set_index("plazo_origen_anos")
+    check(abs(portfolio.loc[1, "parte_unidades_a_2y"] - 0.2) < 1e-9 and abs(portfolio.loc[3, "parte_usd_a_1y"] - 0.25) < 1e-9
+          and "SUPUESTO" in console and "the destination term is known" in console,
+          "the shares are learned from the closed months (sff_transiciones_plazo), the assumption is said and checked")
+
+
 def test_a_term_column_that_is_not_mandatory() -> None:
     print("B · a term_column that is not a mandatory dim stops when the Config is built")
     check_stops(lambda: term_configuration("term_level_2"), "must be one of the mandatory dims",
@@ -77,5 +132,6 @@ def test_a_term_column_that_is_not_mandatory() -> None:
 
 if __name__ == "__main__":
     test_the_term_column()
+    test_the_term_transitions()
     test_a_term_column_that_is_not_mandatory()
     finish()
