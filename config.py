@@ -588,7 +588,7 @@ class Config:
     isolated_tr_usd_renewed_ge120_col: Optional[str] = None    # [CFG] ... ratio ≥ 1.20 (the six add up to the isolated base)
     flag_time_series_col: str = "flag_time_series"          # [CFG 1.1 1.2] states the rows of the time_series universe
 
-    business_mandatory_dims: list = field(default_factory=list)       # [CFG VER 1.2 2.1 2.2 2.7 3.1 4.1 7.1 7.2] open the series and the uplift cell
+    business_mandatory_dims: list = field(default_factory=list)       # [CFG VER 1.2 2.1 2.2 2.7 3.1 4.1 5.1 7.1 7.2] open the series and the uplift cell
     leveled_dims: dict = field(default_factory=dict)  # [CFG 1.2] mandatory dims that get a generated coarse level (step 1.2):
                                                       # {column: "ordinal" | "nominal"}. The column keeps its raw value
                                                       # (the fine level); <column>_level_1 groups its values by their
@@ -599,7 +599,7 @@ class Config:
     level_merge_max_pp: Optional[float] = None        # [1.2] two neighbouring values merge while their standardised rates differ
                                                       # by at most this (pp). None: the binomial noise of a series at the
                                                       # support floor, 100·√(p(1−p)/support_floor), p = the training rate
-    structural_timevarying_dims: dict = field(default_factory=dict)   # [CFG 1.2 1.7 2.2 4.1 5.1 7.1 8.6] column → "negative" | "positive"
+    structural_timevarying_dims: dict = field(default_factory=dict)   # [CFG 1.2 1.7 2.2 4.1 5.1 7.1 7.2 8.6] column → "negative" | "positive"
     distribute_marks: bool = True   # [CFG 4.1] the box of stage 4.1 matures the negative states still to come (the forecast
                                     # carries them). False = the identity box: the forecast with today's states
     maturation_dims: list = field(default_factory=list)  # [CFG 1.2 4.1 8.6] the states whose extract says WHEN they were set:
@@ -650,19 +650,19 @@ class Config:
     uplift_cap: float = 3.0               # [3.1] an uplift is clipped to [0.01, 3]: a renewer never pays 3× what fell due
     uplift_bootstrap_samples: int = 200   # [3.1] resamples of the renewer rows for the uplift band (p5-p95)
     random_seed: int = 42                 # [3.1] the bootstrap is reproducible
-    # ─── the future pipeline (step 5.1) and the forecast (step 7.2) ───
+    # ─── the acquisitions (step 5.1) and the forecast with the projected renewals (step 7.2) ───
     # the SIMULATION WINDOW: from the current month (included) to simulation_end. What happens in it
     # (renewals of 1-year licences, acquisitions, time_series conversions) falls due 12 months later
     simulation_end: Optional[str] = None          # [CFG] the last month simulated; None = December of the current month's year
     term_column: Optional[str] = None             # [CFG 1.3 5.1 7.2] the column with the term of the licence; None = every licence is of 1 year
     one_year_term_value: str = "1 year"           # [CFG 5.1] the value of term_column that means a 1-year licence (only those re-enter)
-    renewal_reentry_discount: float = 0.0         # [CFG 5.1] a renewal falls due again at the price it renewed: no discount
+    renewal_reentry_discount: float = 0.0         # [CFG 7.2] a renewal falls due again at the price it renewed: no discount
     acquisition_column: Optional[str] = None      # [CFG VER 3.2 5.1 7.2] the column that says a row is an acquisition; None = no acquisition simulated
-    acquisition_values: list = field(default_factory=list)      # [CFG 3.2 5.1] its values that are acquisition: each one is simulated apart
-    renewed_acquisition_value: Any = None   # [CFG 5.1] the value of acquisition_column once an acquisition has renewed: the
+    acquisition_values: list = field(default_factory=list)      # [CFG 3.2 5.1 7.2] its values that are acquisition: each one is simulated apart
+    renewed_acquisition_value: Any = None   # [CFG 7.2] the value of acquisition_column once an acquisition has renewed: the
                                             # renewal it creates (a proyectada row of step 5.1) is no longer an
                                             # acquisition. None = the proyectada row keeps the value of the row due
-    dims_after_renewal: dict = field(default_factory=dict)   # [CFG 5.1] other dims a renewal changes: column → the value of the
+    dims_after_renewal: dict = field(default_factory=dict)   # [CFG 7.2] other dims a renewal changes: column → the value of the
                                                              # renewal it creates (prev_OperationGroup → the renewal
                                                              # operation). The timevarying states of a renewal are always
                                                              # neutral: nothing is known yet of its dormant, softcancel…
@@ -679,6 +679,18 @@ class Config:
     acquisition_ratio_high: float = 2.0           # [5.1] [low, high]: WARN (the simulation is not the shape × a plausible level)
     acquisition_exam_origins: int = 6             # [5.1 8.6] the exam of the acquisitions: the last 6 closed months are origins; at
                                                   # each one the box is rebuilt with the months before it only
+    acquisition_targets_file: Optional[str] = None   # [CFG 5.1] the acquisition team's forecast of the YEAR per region, a CSV with
+                                                     # the columns region and objetivo: the simulated acquisitions of every region
+                                                     # are scaled so that sold (January to the last closed month) + simulated =
+                                                     # its target, keeping their mix of products. None = the simulation as it is
+    acquisition_target_column: Optional[str] = None  # [CFG 5.1] the region column the targets are written in (tr_regional_level_3)
+    acquisition_target_unit_usd: float = 1000.0      # [5.1] the unit of the targets: 1000 = thousands of USD
+    acquisition_target_tolerance: float = 0.01       # [5.1] the check of step 5.1: every adjusted region within 1 % of its target
+    acquisition_target_all_terms: bool = True        # [5.1] the targets count every term: the 1-year part (the one simulated) is
+                                                     # the target × the 1-year share of the region's sales in the last 12
+                                                     # months whose every term the extract already shows
+    acquisition_chart_history_years: int = 3         # [5.1] the chart of step 5.1 draws the acquisitions from January of 3 years
+                                                     # before the current one to December
     # the confidence of a future row (step 7.2): how sure the forecast is of its rate
     confidence_high_band_pp: float = 5.0      # [7.2] high: its rate band within ±5 pp (the precision of own_rate_floor)…
     confidence_high_exam_pp: float = 5.0      # [7.2] …its composition judged by the backtest, with an exam error ≤ 5 pp
@@ -959,6 +971,11 @@ class Config:
         edges = list(self.discount_bucket_edges)
         if edges != sorted(set(edges)) or edges[0] != 0 or edges[-1] != 100:
             raise ValueError(f"discount_bucket_edges must go up strictly from 0 to 100 (in %): {edges}")
+        if self.acquisition_targets_file:
+            if not os.path.exists(self.acquisition_targets_file):
+                raise ValueError(f"acquisition_targets_file not found: {self.acquisition_targets_file}")
+            if not self.acquisition_target_column:
+                raise ValueError("acquisition_targets_file needs acquisition_target_column (the region column of the targets)")
         for discount_name in ("acquisition_discount", "renewal_reentry_discount"):
             if not (0 <= float(getattr(self, discount_name)) < 1):
                 raise ValueError(f"{discount_name} must be in [0, 1) (found {getattr(self, discount_name)})")

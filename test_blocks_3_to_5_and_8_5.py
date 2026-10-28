@@ -42,12 +42,77 @@ def test_acquisition_simulation() -> None:
           "an acquisition carries the acquisition discount (0.4) and every timevarying flag off")
 
 
+def test_the_acquisition_targets() -> None:
+    print("B2 · the acquisitions completed up to the acquisition team's target of every region (hand-made fine table)")
+    import os
+    import tempfile
+    from block_5_future_pipeline import TARGET_ADJUSTED, TARGET_MISSING, TARGET_NOT_IN_DATA, FuturePipeline
+    targets_file = os.path.join(tempfile.mkdtemp(), "objetivos.csv")
+    pd.DataFrame({"region": ["EU", "Asia"], "objetivo": [30.0, 5.0]}).to_csv(targets_file, index=False)
+    configuration = synthetic_with(acquisition_column="newcust", acquisition_values=["pure"], term_column=None,
+                                   acquisition_targets_file=targets_file, acquisition_target_column="region",
+                                   acquisition_target_unit_usd=1000.0)
+    rows = []
+    for due_month in pd.period_range("2025-01", "2027-08", freq="M"):
+        growth = 1.2 if (due_month - 12).year == 2026 else 1.0
+        for region, product, units in (("EU", "A", 100.0), ("EU", "B", 50.0), ("US", "A", 30.0)):
+            rows.append({"period": due_month, "region": region, "product": product, "dormant": False, "softcancel": False,
+                         "no_instalado": False, "autorenew": False, "channel": "web", "newcust": "pure",
+                         "total_tr_units": units * growth, "total_tr_usd": units * growth * 10.0})
+    fine = pd.DataFrame(rows)
+    fine["rol"] = "entrenamiento"
+    box = FuturePipeline(fine, configuration)
+    table = box.targets.set_index("region")
+    simulated = box.simulated
+    eu = simulated[simulated["region"] == "EU"]
+    # sold in 2026 up to August: (100 + 50) × 1.2 × $10 × 8 months = $14,400; target $30,000 → $15,600 to simulate,
+    # the method simulated (100 + 50) × 1.2 × $10 × 4 months = $7,200: factor 15,600 / 7,200
+    check(abs(table.loc["EU", "vendido_hasta_hoy_usd"] - 14400) < 1e-6 and abs(table.loc["EU", "factor_1_ano"] - 15600 / 7200) < 1e-9
+          and abs(eu["total_tr_usd"].sum() + 14400 - 30000) < 1e-6 and table.loc["EU", "estado"] == TARGET_ADJUSTED,
+          "EU: sold $14,400 to August + simulated $15,600 = its target of $30,000 (factor 2.17)")
+    by_product = eu.groupby("product")["total_tr_units"].sum()
+    check(abs(by_product["A"] / by_product["B"] - 2.0) < 1e-9,
+          "EU keeps its mix of products: A sells twice B, as a year before")
+    us = simulated[simulated["region"] == "US"]
+    check(table.loc["US", "estado"] == TARGET_MISSING and abs(us["total_tr_usd"].sum() - 30 * 1.2 * 10 * 4) < 1e-6
+          and table.loc["Asia", "estado"] == TARGET_NOT_IN_DATA,
+          "a region without target keeps the method's simulation; a target of a region not in the data is reported")
+
+    # with terms: EU sells 1-year (100 units a month) and 2-year licences (50 units, $20 each); the extract reaches the due
+    # date of the 2-year sales of this year (2028), so the proportion is the one of this year's sales
+    terms_file = os.path.join(tempfile.mkdtemp(), "objetivos.csv")
+    pd.DataFrame({"region": ["EU"], "objetivo": [40.0]}).to_csv(terms_file, index=False)
+    configuration = synthetic_with(acquisition_column="newcust", acquisition_values=["pure"], term_column="term",
+                                   business_mandatory_dims=["region", "product", "term"], one_year_term_value="1 year", acquisition_targets_file=terms_file,
+                                   acquisition_target_column="region", acquisition_target_unit_usd=1000.0)
+    rows = []
+    for due_month in pd.period_range("2025-01", "2028-08", freq="M"):
+        for term, years, units, price in (("1 year", 1, 100.0, 10.0), ("2 year", 2, 50.0, 20.0)):
+            if (due_month - 12 * years) < pd.Period("2024-01", freq="M") or (term == "1 year" and due_month > pd.Period("2027-08", freq="M")):
+                continue
+            rows.append({"period": due_month, "region": "EU", "product": "A", "dormant": False, "softcancel": False,
+                         "no_instalado": False, "autorenew": False, "channel": "web", "newcust": "pure", "term": term,
+                         "total_tr_units": units, "total_tr_usd": units * price})
+    fine = pd.DataFrame(rows)
+    fine["rol"] = "entrenamiento"
+    box = FuturePipeline(fine, configuration)
+    row = box.targets.set_index("region").loc["EU"]
+    # sold January to August 2026: 1 year 8 × $1,000 = $8,000 and 2 years 8 × $1,000 = $8,000 → half and half;
+    # target $40,000: $24,000 to sell, $12,000 of it in 1 year (the rows of the window) and $12,000 in 2 years
+    one_year = box.simulated["total_tr_usd"].sum()
+    check(abs(row["vendido_hasta_hoy_usd"] - 16000) < 1e-6 and abs(row["parte_1_anos"] - 0.5) < 1e-9
+          and abs(one_year - 12000) < 1e-6 and abs(row["simulado_2_anos_usd"] - 12000) < 1e-6
+          and abs(row["final_usd"] - 40000) < 1e-6 and box.targets.attrs["vendido_leido_en_el_extracto"],
+          "every term: sold $16,000 (half 1 year, half 2 years) + $12,000 simulated in 1 year (the rows of the window) "
+          "+ $12,000 in 2 years = the target of $40,000; only the 1-year part makes rows")
+
+
 def test_steps_15_to_18() -> None:
     print("A · uplift, its backtest, the forecast and the validation")
     configuration = synthetic_with()
     results = {}
     console = console_of(lambda: results.update(run(configuration)))
-    for label, count in (("3.1", 6), ("3.2", 1), ("3.3", 3), ("4.1", 3), ("5.1", 3), ("7.2", 10)):
+    for label, count in (("3.1", 6), ("3.2", 1), ("3.3", 3), ("4.1", 3), ("5.1", 2), ("7.2", 11)):
         check(f"{count} checks: {count} ok" in step_section(console, label), f"the checks of step {label} pass")
     check("7 checks:" in step_section(console, "8.5") and "0 failed" in step_section(console, "8.5"),
           "the final validation passes (warnings allowed)")
@@ -477,6 +542,7 @@ def test_the_error_of_the_simulated_acquisitions() -> None:
 if __name__ == "__main__":
     test_steps_15_to_18()
     test_acquisition_simulation()
+    test_the_acquisition_targets()
     test_the_level_of_the_acquisitions_is_aggregate()
     test_the_box_of_the_states()
     test_the_maturation_by_region()

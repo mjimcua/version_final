@@ -469,31 +469,32 @@ Predice cuántas unidades de cada mes futuro llevarán un estado negativo (softc
   2. La curva de cada estado fechado falla su cuota final menos que el estado visto entonces, y por menos de maturation\_curve\_max\_error\_pp (5 pp). Aviso: si no, la curva no se usa y el estado toma su cuota histórica en el forecast y en el examen honesto (desde el 26-oct: la curva de dormant del dato real fallaba 70 pp y restaba un 17,6 % a 2026).
   3. Todo estado fechado tiene una curva aprendida de cohortes que lo llevan (aviso: si no, su maduración es 0).
 
-## Bloque 5 · Pipeline futura (paso 5.1)
+## Bloque 5 · Adquisición (paso 5.1)
 
-**Misión:** rellenar la pipeline que vencerá 12 meses después de la ventana de simulación y que el extracto no puede tener: la renovación de las licencias de 1 año que vencen en la ventana y la captación vendida en ella.
+**Misión:** la adquisición del año en un solo paso: lo ya vendido a clientes nuevos, lo que falta por vender del mes en curso a diciembre (la ventana) y, si hay objetivo del equipo de adquisición, hasta dónde llega. Lo vendido en la ventana vence 12 meses después: es pipeline del año siguiente que el extracto aún no tiene.
 
-**Mecanismo:** una renovación proyectada vence el mismo mes del año siguiente con las unidades y el USD que el forecast espera que renueve; la captación se simula como lo que vendió su grupo el mismo mes del año anterior × el nivel de su valor de captación × su valor por unidad, y se examina en los meses cerrados como si cada uno fuera el mes en curso. Las filas salen sin predecir: el bloque 7 las valora con los bloques 2, 3 y 4; el error de su examen entra en la banda.
+**Mecanismo:** una venta se simula como lo que vendió su grupo el mismo mes del año anterior × el nivel de su valor de adquisición × su valor por unidad. Con el CSV de objetivos, cada subregión se completa hasta su objetivo en todos los plazos; solo la parte de 1 año vence en el horizonte y hace filas. La simulación se examina en los meses cerrados como si cada uno fuera el mes en curso. Las filas salen sin predecir: el bloque 7 las valora con los bloques 2, 3 y 4, y el error del examen entra en la banda. **Lo que no está aquí:** la pipeline real que vence entre el mes en curso y diciembre no es adquisición. El paso 7.2 la pronostica y proyecta su renovación de 1 año, que vuelve a vencer 12 meses después (filas proyectadas), porque necesita ese forecast.
 
-**Lee:** `fine_table` (bloque 1). · **Entrega:** `future_pipeline` (la caja, la comparación con el año anterior y el examen de la captación).
+**Lee:** `fine_table` (bloque 1) y, si está configurado, `objetivos_adquisicion_2026.csv`. · **Entrega:** `future_pipeline` (la caja, la tabla hasta el objetivo, la adquisición mes a mes, la comparación con el año anterior y el examen).
 
-### 5.1 · Pipeline futura (`FuturePipeline`)
+### 5.1 · Adquisición (`FuturePipeline`)
 
-Construye las filas que vencerán 12 meses después de la ventana de simulación (mes en curso → diciembre) y que el extracto aún no puede tener: las renovaciones proyectadas de las licencias de 1 año y la captación simulada. Examina la captación en los meses cerrados; el error de ese examen entra en la banda oficial (7.2).
+Lee lo vendido en 1, 2 y 3 años, simula la ventana (mes en curso → diciembre) y la completa hasta el objetivo del equipo de adquisición. Después examina el método en los meses cerrados y dibuja la adquisición mes a mes. El error del examen entra en la banda oficial (7.2).
 
-- **Entra:** `fine_table` (1.4).
-- **Sale:** `future_pipeline`: la caja, con `new_rows(futuro)` (las filas proyectadas, que necesitan el forecast del extracto, más las simuladas, sin predecir), los niveles de captación, la comparación con el año anterior y el examen de la captación. No escribe tablas; el examen sale en el informe.
-- **Depende de:** 1.4 (las ventas de captación se leen como las filas de captación de 1 año que vencen 12 meses después).
+- **Entra:** `fine_table` (1.4) y, con `acquisition_targets_file`, el CSV de objetivos (subregión de `tr_regional_level_3`, miles de USD, todos los plazos).
+- **Sale:** `future_pipeline`: la caja, con `acquisition_rows()` (las filas simuladas de 1 año, sin predecir; el paso 7.2 las junta con las proyectadas), los niveles, la tabla hasta el objetivo, la adquisición mes a mes, la comparación con el año anterior y el examen. Gráfico `05_1_adquisicion_mes_a_mes.png`. No escribe tablas; el examen sale en el informe.
+- **Depende de:** 1.4. Una licencia de t años vendida en el mes m es la fila de adquisición de plazo t que vence en m + 12 t.
 - **Acciones:**
-  1. Lee las captaciones como ventas y calcula su nivel (últimos 3 meses sobre los mismos meses un año antes).
-  2. Simula la captación de la ventana y la compara con los mismos meses del año anterior.
+  1. Lee las ventas de adquisición por plazo y calcula su nivel (últimos 3 meses sobre los mismos meses un año antes).
+  2. Simula la captación de la ventana y la compara con los mismos meses del año anterior. Si hay objetivos del equipo de adquisición (acquisition\_targets\_file, por acquisition\_target\_column), completa el año de cada región hasta su objetivo. Lo hace con un factor por región sobre la simulación, para que lo vendido de enero al último mes cerrado más lo simulado sea igual al objetivo, y la mezcla de productos no cambia. El objetivo cuenta todos los plazos: lo que falta (objetivo − lo vendido este año en 1, 2 y 3 años) se reparte por plazos en la proporción de las ventas del año, o en la de los últimos 12 meses con todos los plazos visibles si el extracto aún no llega a ellos. Solo la parte de 1 año genera filas; la de 2 y 3 años se cuenta para que el total cuadre y vence después del horizonte. Lo enseña en la tabla ADQUISICIÓN HASTA EL OBJETIVO.
   3. Examina la captación: en cada uno de los 6 últimos meses cerrados rehace la caja como si fuera el mes en curso y compara lo simulado con lo vendido.
   4. Comprueba la caja.
   5. Cuenta las comprobaciones y para si alguna falla.
   6. Muestra los niveles, la comparación y el examen.
-- **Comprobaciones (3):**
-  1. Todo valor que toma una renovación proyectada al renovar existe en la historia, así que su serie de retención se encuentra (aviso).
-  2. La captación simulada está entre 0,5 y 2 veces lo vendido en los mismos meses un año antes (aviso).
+  7. Dibuja la adquisición mes a mes desde enero de hace 3 años, siempre. Un panel con el total y la suma de cada año (vendido + simulado frente al objetivo) y otro con una línea por plazo (1, 2 y 3 años). Real en línea continua, estimado en punteada, simulado en discontinua.
+- **Comprobaciones (2, o 3 con objetivos):**
+  1. La captación simulada está entre 0,5 y 2 veces lo vendido en los mismos meses un año antes (aviso).
+  2. Con objetivos: cada región acaba el año a menos del 1 % de su objetivo (aviso). Avisa también de las regiones del objetivo que no están en los datos (un nombre que revisar) y de las que tienen hueco pero nada que escalar.
   3. El examen simula solo con meses anteriores a su origen.
 
 ## Bloque 6 · Time series (paso 6.1)
@@ -559,7 +560,7 @@ Predice cada serie en los meses de examen con solo lo que se sabía h meses ante
 
 ### 7.2 · Forecast
 
-Monta el forecast en dinero. Cada fila futura (del extracto y de la pipeline futura) toma su tasa (caja 2.7), su uplift (3.1, con el veredicto de la 3.3) y sus estados al vencer (caja 4.1), y se valora: unidades × tasa, USD × tasa × uplift. Después suma por mes y año con la banda oficial, que reúne todos los errores medidos.
+Monta el forecast en dinero. Cada fila futura (del extracto y de la proyectada que construye este paso y de la adquisición simulada de la caja 5.1) toma su tasa (caja 2.7), su uplift (3.1, con el veredicto de la 3.3) y sus estados al vencer (caja 4.1), y se valora: unidades × tasa, USD × tasa × uplift. Después suma por mes y año con la banda oficial, que reúne todos los errores medidos.
 
 - **Entra:**
   - `fine_table` (1.4): las filas futuras;
@@ -567,7 +568,7 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la pipeline fut
   - `rate_box` (2.7): la tasa;
   - `uplift_cells`, `uplift_state_factors` y `price_increases` (3.1), con `uplift_verdict` (3.3): el uplift;
   - `state_maturation` (4.1): los estados al vencer;
-  - `future_pipeline` (5.1): las filas de la ventana y el examen de la captación (su error, en la banda);
+  - `future_pipeline` (5.1): las filas simuladas de 1 año de la ventana y el examen de la adquisición (su error, en la banda);
   - `time_series_universe` (6.1): el universo time series y su banda;
   - `series_exam` (7.1): el error de la tasa por horizonte;
   - `pool_reference` (2.4) y `backtest` (2.6): la confianza de cada fila.
@@ -581,21 +582,22 @@ Monta el forecast en dinero. Cada fila futura (del extracto y de la pipeline fut
   4. Asigna el uplift (contrato o estadístico) y su banda.
   5. Calcula las renovaciones esperadas con los estados de hoy, fila a fila.
   6. Valora los estados al vencer de las filas del extracto (caja 4.1).
-  7. Pide a la caja 5.1 las filas de la ventana, las predice y las madura; asigna la confianza de cada fila.
+  7. Proyecta la renovación de 1 año de la pipeline real que vence en la ventana (mes en curso → diciembre): lo que el forecast espera que renueve vuelve a vencer el mismo mes del año siguiente (filas proyectadas, sin descuento y con las dims que cambia la renovación). Hasta el 27-oct-2026 lo hacía la caja 5.1. Las junta con las filas simuladas de la caja 5.1, las predice y las madura; asigna la confianza de cada fila.
   8. Suma por mes y año, por origen de la pipeline, y añade el universo time series de la caja 6.1 (sus ingresos simulados, la pipeline de su reentrada y su renovación esperada). La banda oficial, centrada en `total_usd`, reúne todo error medido en meses cerrados: √(tasa² + precio²) de la pipeline (la tasa del 7.1, y una renovación proyectada suma el error del mes en que se predijo su volumen; el precio del 3.3) + el volumen de la captación simulada (5.1) + el universo time series (6.1). Por año, los errores de sus meses sumados.
   9. Comprueba el forecast.
   10. Escribe los meses, el resumen y la maduración.
   11. Cuenta las comprobaciones y para si alguna falla.
   12. Muestra el forecast por mes, por año, la maduración y el detector de estados por encima de su proporción final.
-- **Comprobaciones (10):**
+- **Comprobaciones (11):**
   1. Toda fila futura tiene tasa, uplift y esperado.
   2. Toda tasa y toda banda están en \[0, 1\], y la banda contiene la tasa.
   3. No se predice ninguna fila cerrada; se predice toda fila futura del extracto.
   4. La pipeline de las filas futuras del extracto se conserva (Σ USD que vence).
   5. Los totales son la suma de las filas.
-  6. La maduración mueve unidades, no las crea: Σ al vencer = Σ que vence, en unidades y USD, y una fila conserva entre 0 y todas sus unidades.
-  7. Ningún estado negativo está HOY 2 pp o más por encima de su proporción final en ningún mes futuro (aviso: el extracto lo pone antes de tiempo).
-  8. a 10. `sff_forecast_mes`, `sff_resumen_negocio` y `sff_forecast_maduracion` (y sff\_curva\_maduracion) se escriben y se releen.
+  6. Todo valor que toma una renovación proyectada al renovar existe en la historia, así que su serie de retención se encuentra (aviso; antes estaba en el 5.1).
+  7. La maduración mueve unidades, no las crea: Σ al vencer = Σ que vence, en unidades y USD, y una fila conserva entre 0 y todas sus unidades.
+  8. Ningún estado negativo está HOY 2 pp o más por encima de su proporción final en ningún mes futuro (aviso: el extracto lo pone antes de tiempo).
+  9. a 11. `sff_forecast_mes`, `sff_resumen_negocio` y `sff_forecast_maduracion` (y sff\_curva\_maduracion) se escriben y se releen.
 
 ### 7.3 · Total por año y origen
 
@@ -671,7 +673,7 @@ Construye los satélites del núcleo para el análisis en profundidad: cada id d
 Pone toda la historia de cada fila en una tabla ancha, de izquierda a derecha en el orden de los pasos, con los huecos como filas explícitas. El prefijo de cada columna (`s1_4_`, `s7_2_`…) es el paso que la crea. Una leyenda dice cómo se agrega cada columna.
 
 - **Entra:** `fine_table` (1.4), `forecast_units` (1.5), `rated_units` (1.7), `series_table` (1.6), `series_rate` (1.7), `series_estimate` (2.3), `pool_dynamics` (2.5), `backtest` (2.6), `forecast` (7.2), `time_series_rows` (1.2), `time_series` y `forecast_total` (7.3), `ladder` (2.2), `audit` (8.2) y `series_exam` (7.1).
-- **Sale:** `core` (una fila por fila fina del extracto, hueco, fila de la pipeline futura, fila de predicción de los estados y fila time\_series), `core_legend` y `forecast_series` (la dimensión: una fila por serie). Escribe `sff_nucleo`, `sff_forecast_series` y `sff_nucleo_leyenda`.
+- **Sale:** `core` (una fila por fila fina del extracto, hueco, fila de la proyectada o simulada, fila de predicción de los estados y fila time\_series), `core_legend` y `forecast_series` (la dimensión: una fila por serie). Escribe `sff_nucleo`, `sff_forecast_series` y `sff_nucleo_leyenda`.
 - **Depende de:** casi todas; en especial 7.2 y 7.3, porque el total del forecast se comprueba como suma del núcleo.
 - **Acciones:**
   1. Toma las filas del extracto con sus medidas `s1_1_` y `s1_3_` y sus ids.

@@ -43,12 +43,13 @@ from config import (CALENDAR_ROLE_COLUMN, COMPOSITION_ID_COLUMN, Config, DUE_UNI
                     TOTAL_ORIGIN_PROJECTED, TOTAL_ORIGIN_RENEWED, TOTAL_ORIGIN_SIMULATED, TOTAL_ORIGIN_TOTAL,
                     TRUTH_ROLES, TS_REENTRY, UNIT_ID_COLUMN, UNITS_AT_DUE_COLUMN, UNITS_TODAY_COLUMN,
                     UPLIFT_CELL_ID_COLUMN, UPLIFT_ORIGIN_CELL, UPLIFT_ORIGIN_CONTRACT, UPLIFT_ORIGIN_GLOBAL,
-                    UPLIFT_ORIGIN_MANDATORY, WITH_DATES_COLUMN, has_no_negative_state, join_columns, state_combination)
+                    UPLIFT_ORIGIN_MANDATORY, WITH_DATES_COLUMN, has_no_negative_state, is_one_year, join_columns,
+                    state_combination)
 from block_2_rate import CHOSEN_MODE, DEFAULT_MODE, RateBox, band_of_horizon
 from block_3_price import contract_rule, state_factor_of_rows
 from block_4_customer_states import (StateMaturation, curve_table, honest_total_exam, maturation_by_month, show_maturation_by_month,
                                      show_states_above_final, states_above_final)
-from block_5_future_pipeline import FuturePipeline
+from block_5_future_pipeline import FuturePipeline, carried_columns, inactive_value, with_ids
 from block_6_time_series import TimeSeriesUniverse
 from prediction import index_history, months_known, predict_composition
 from price_increases import increase_factor, price_group_of
@@ -519,7 +520,8 @@ def errors_of_the_total(detail: pd.DataFrame, methods: list, configuration: Conf
 #   · the rate of a series at a horizon          → the box of the rate (step 2.7), examined by step 7.1
 #   · the uplift of a cell and of a state        → step 3.1, examined by step 3.3
 #   · the customer states at due date            → the box of the customer states (step 4.1), examined by step 7.1
-#   · the rows the extract cannot have yet       → the box of the future pipeline (step 5.1), with its exam
+#   · the rows the extract cannot have yet       → the projected renewals (here, step 7.2) and the simulated
+#                                                  acquisitions (step 5.1, with its exam)
 #   · the error of a total                       → the exam of every forecast series (step 7.1)
 #
 # THE FUTURE ROWS: the fine rows of the extract from the current month on (pipeline 'real') and the rows of the
@@ -678,10 +680,11 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
                                             f"state in {int(arrived.sum()):,} prediction rows · "
                                             f"{future['maduracion_delta_usd'].sum():+,.0f} USD in the forecast")
 
-    # [7] the simulation window: the box of the future pipeline gives its rows (the renewals of the extract's 1-year
-    #     licences due in the window, the simulated acquisitions); predicted with neutral states and then matured by the
-    #     same box of the states (they have no maturation columns: the historical final share)
-    extension = future_pipeline.new_rows(future)
+    # [7] the simulation window: the projected renewals (the extract's 1-year licences due in the window renew as this
+    #     forecast expects and fall due again 12 months later: built here, they need it) and the simulated acquisitions
+    #     (the box of step 5.1); predicted with neutral states and then matured by the same box of the states (they
+    #     have no maturation columns: the historical final share)
+    extension = rows_of_the_window(future, fine_table, future_pipeline, configuration)
     extension_table = pd.DataFrame()
     if len(extension):
         extension = predict_rows(extension, context, configuration)
@@ -726,6 +729,7 @@ def assemble_forecast(fine_table: pd.DataFrame, forecast_units: pd.DataFrame, se
     usd_difference = future[DUE_USD_AT_DUE_COLUMN].sum() - future[configuration.pipeline_usd_col].sum()
     neutral_kept = future.loc[future[MATURATION_ROW_COLUMN] == 0, DUE_UNITS_AT_DUE_COLUMN] / future.loc[
         future[MATURATION_ROW_COLUMN] == 0, configuration.pipeline_units_col].where(lambda units: units > 0)
+    check_the_projected_renewals(fine_table, configuration, check_log)
     configuration.log_check(STEP_7_2_LABEL, check_log,
                             "the maturation moves units, it does not create them (Σ units and USD at due date = Σ due; "
                             "a row keeps between 0 and all of its units)",
@@ -1244,6 +1248,73 @@ def add_the_exam_band(by_month: pd.DataFrame, by_year: pd.DataFrame, series_exam
     by_year["banda_examen_baja"] = by_year["total_usd"] - by_year["error_examen_usd"]
     by_year["banda_examen_alta"] = by_year["total_usd"] + by_year["error_examen_usd"]
     return by_month, by_year
+
+
+# ─── the projected renewals: the real pipeline still to fall due this year, renewed, falls due again next year ───
+def projected_renewals(future: pd.DataFrame, fine_table: pd.DataFrame, configuration: Config) -> pd.DataFrame:
+    """proyectada: every 1-year licence (term_column = one_year_term_value) of the extract due in the simulation window
+    renews as this forecast expects; its renewal falls due the same month next year with the same dims, units =
+    expected renewed units, value = expected renewed USD, discount renewal_reentry_discount (0). An acquisition that
+    renews is no longer one (acquisition_column → renewed_acquisition_value); the dims of dims_after_renewal take their
+    declared value; the customer states are neutral (nothing is known yet of the renewal's dormant, softcancel…).
+    Until 27-oct-2026 this was built in step 5.1; it belongs here because it is made of this forecast."""
+    window = configuration.simulation_window
+    if not window:
+        return pd.DataFrame()
+    period = configuration.period_col
+    carried = [column for column in carried_columns(configuration, fine_table.columns) if column in future.columns]
+    renewing = future[future[period].isin(window) & is_one_year(future, configuration) & (future["esperado_unidades"] > 0)]
+    projected = renewing[carried].copy()
+    projected[period] = renewing[period].to_numpy() + configuration.one_year_term_months
+    projected[configuration.pipeline_units_col] = renewing["esperado_unidades"].to_numpy()
+    projected[configuration.pipeline_usd_col] = renewing["esperado_usd"].to_numpy()
+    if configuration.discount_value_column:
+        projected[configuration.discount_value_column] = configuration.renewal_reentry_discount
+    acquisition = configuration.acquisition_column
+    if acquisition and acquisition in projected.columns and configuration.renewed_acquisition_value is not None:
+        was_acquisition = projected[acquisition].isin(configuration.acquisition_values)
+        projected[acquisition] = projected[acquisition].astype(object)
+        projected.loc[was_acquisition, acquisition] = configuration.renewed_acquisition_value
+    for column_name, value_after_renewal in configuration.dims_after_renewal.items():
+        if column_name in projected.columns:
+            projected[column_name] = projected[column_name].astype(object)
+            projected[column_name] = value_after_renewal
+    for column_name in configuration.structural_timevarying_dims:
+        if column_name in projected.columns and column_name in fine_table.columns:
+            projected[column_name] = inactive_value(fine_table[column_name])
+    projected[PIPELINE_ORIGIN_COLUMN] = PIPELINE_PROJECTED
+    return projected
+
+
+def rows_of_the_window(future: pd.DataFrame, fine_table: pd.DataFrame, future_pipeline: FuturePipeline,
+                       configuration: Config) -> pd.DataFrame:
+    """The rows the simulation window creates, with their ids and not predicted: the projected renewals (built here)
+    and the simulated acquisitions (the box of step 5.1)."""
+    frames = [frame for frame in (projected_renewals(future, fine_table, configuration), future_pipeline.simulated)
+              if frame is not None and len(frame)]
+    if not frames:
+        return pd.DataFrame()
+    return with_ids(pd.concat(frames, ignore_index=True), configuration)
+
+
+def check_the_projected_renewals(fine_table: pd.DataFrame, configuration: Config, check_log: list) -> None:
+    """Every value a projected renewal takes after renewing exists in the history (WARN): its retention series can be
+    found. Until 27-oct-2026 a check of step 5.1."""
+    after_renewal = dict(configuration.dims_after_renewal)
+    if configuration.acquisition_column and configuration.renewed_acquisition_value is not None:
+        after_renewal[configuration.acquisition_column] = configuration.renewed_acquisition_value
+    history_values = {column_name: set(fine_table[column_name].dropna().astype(str).unique())
+                      for column_name in after_renewal if column_name in fine_table.columns}
+    unseen = {column_name: value for column_name, value in after_renewal.items()
+              if column_name in history_values and str(value) not in history_values[column_name]}
+    configuration.log_check(STEP_7_2_LABEL, check_log,
+                            "every value a projected renewal takes after renewing exists in the history "
+                            "(its retention series can be found)",
+                            not unseen,
+                            failure_detail="; ".join(f"{column_name} = {value!r} is not in the data (values: "
+                                                     f"{sorted(history_values[column_name])[:8]})"
+                                                     for column_name, value in unseen.items()),
+                            blocking=False, context=f"{after_renewal}" if after_renewal else "nothing declared")
 
 
 def check_forecast(future: pd.DataFrame, fine_table: pd.DataFrame, by_month: pd.DataFrame,

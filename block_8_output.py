@@ -1914,7 +1914,7 @@ def validate_chain(extract_summary: dict, results: dict, configuration: Config) 
 #   2. B2 · The rate: the binomial support before and after the ladder, the dynamics, the backtest and the exam.
 #   3. B3 · The price: the uplift, the contract rule, the paths and the ways in the exam, the error of the price.
 #   4. B4 · The customer states: the exam of the curve, the honest exam, the maturation by year.
-#   5. B5 · The future pipeline: the simulated acquisitions against the year before, and their exam.
+#   5. B5 · The acquisitions: by year and term, up to the targets, against the year before, and their exam.
 #   6. B6 · The time series universe: the exam of every level rule, the universe by year and origin.
 #   7. B7 · The forecast: by month and by year, the official band and what it is made of, the total by origin.
 #   8. B8 · Control: the rows added and wiped, the validation of the chain, the relations of the Power BI model, and
@@ -2172,8 +2172,10 @@ def chapter_new_rows(results: dict, configuration: Config) -> str:
              "del mes en curso o más tarde. La generan las ventas y renovaciones desde el mes en curso, que solo han empezado "
              "(el mes va por la mitad y los siguientes no han empezado): está a medio crear. Si se dejara, el forecast de "
              "esos meses se calcularía sobre una pipeline a medias; el paso 7.2 la reconstruye entera.",
-             "- **proyectada** y **simulada** (paso 7.2): las renovaciones esperadas de las licencias de 1 año que vencen en la "
-             "ventana de simulación, y la captación simulada; vencen 12 meses después y sustituyen a la pipeline borrada.", ""]
+             "- **proyectada** (paso 7.2): las renovaciones esperadas de las licencias de 1 año que vencen en la ventana de "
+             "simulación; vencen 12 meses después.",
+             "- **simulada** (paso 5.1, filas añadidas en 7.2): la adquisición de la ventana, hasta el objetivo del equipo de "
+             "adquisición; vence 12 meses después. Las dos sustituyen a la pipeline borrada.", ""]
     new_rows = results.get("new_rows")
     if new_rows is not None and len(new_rows):
         totals = totals_of_new_rows(new_rows)
@@ -2590,17 +2592,33 @@ def chapter_states(results: dict, configuration: Config) -> str:
 
 
 def chapter_future_pipeline(results: dict, configuration: Config) -> str:
-    """Chapter 5 · B5: the simulated acquisitions against the year before, and their exam."""
-    lines = ["## 5 · B5 · La pipeline futura: renovaciones proyectadas y captación simulada", "",
-             "**La ventana de simulación** (del mes en curso, incluido, a diciembre): lo que ocurre en ella vence doce meses "
-             "después. Las licencias de 1 año que vencen en la ventana renuevan como prevé el forecast y su renovación vence "
-             "el mismo mes del año siguiente (**proyectada**). La captación de la ventana se simula por cada valor de "
-             "captación: lo vendido el mismo mes del año anterior × el nivel, al valor medio de 12 meses "
-             f"(descuento {configuration.acquisition_discount:.0%}; **simulada**). La pipeline de las licencias de 1 año "
-             "vendidas o renovadas desde el mes en curso aún no se conoce: el paso 1.3 la borra y se proyecta."]
+    """Chapter 5 · B5: the acquisitions (step 5.1): sold and simulated by year and term, the targets of the acquisition
+    team, the simulation against the year before, and its exam. The projected renewals are in step 7.2 (chapter 7)."""
+    lines = ["## 5 · B5 · La adquisición", "",
+             "**Qué hace el paso 5.1:** simula la adquisición de la ventana (del mes en curso, incluido, a diciembre): por "
+             "cada valor de adquisición, lo vendido el mismo mes del año anterior × el nivel, al valor medio de 12 meses "
+             f"(descuento {configuration.acquisition_discount:.0%}). Con el objetivo del equipo de adquisición, la simulación "
+             "de cada subregión se escala hasta que lo vendido en el año + lo simulado, en todos los plazos, sea su objetivo; "
+             "solo la parte de 1 año vence en el horizonte y hace filas (**simulada**). ",
+             "",
+             "**Qué no hace:** la pipeline real que vence entre el mes en curso y diciembre no es adquisición: el paso 7.2 "
+             "la pronostica y proyecta su renovación de 1 año, que vence el mismo mes del año siguiente (**proyectada**)."]
     future_pipeline = results.get("future_pipeline")
     if future_pipeline is not None:
         comparison = future_pipeline.get("comparison")
+        by_month = future_pipeline.get("by_month")
+        if by_month is not None and len(by_month):
+            by_year = (by_month.assign(ano=by_month["mes_venta"].map(lambda month: month.year))
+                       .pivot_table(index="ano", columns=["plazo", "tipo"], values="usd", aggfunc="sum", fill_value=0.0))
+            by_year.columns = [f"{int(term)}_anos_{kind}" for term, kind in by_year.columns]
+            by_year["total"] = by_year.sum(axis=1)
+            lines += ["", "**La adquisición por año de venta y plazo** (USD; real = leído en el extracto, estimado = vendido "
+                          "pero su plazo vence después del extracto, simulado = la ventana; gráfico "
+                          "`05_1_adquisicion_mes_a_mes.png`):", "", markdown_table(by_year.reset_index(), 0)]
+        targets = future_pipeline.get("targets")
+        if targets is not None and len(targets):
+            lines += ["", f"**Hasta el objetivo del equipo de adquisición** (proporción por plazo: "
+                          f"{targets.attrs.get('origen_de_la_proporcion', '')}):", "", markdown_table(targets, 2)]
         if comparison is not None and len(comparison):
             lines += ["", "**Lo simulado frente al año anterior:**", "", markdown_table(comparison, 3)]
         if len(future_pipeline["exam"]["summary"]):

@@ -6,7 +6,7 @@ THE EIGHT BLOCKS (each one a module block_<n>_<name>.py with its steps <n>.1, <n
   B2  rate                 2.1-2.7  the renewal rate of any row, at any horizon, with its band
   B3  price                3.1-3.3  the uplift (revaluation) of the renewers, the path that predicts it best
   B4  customer states      4.1      the customer states of the units when they fall due
-  B5  future pipeline      5.1      the rows of pipeline the extract cannot have yet (renewals, acquisitions)
+  B5  acquisition         5.1      the acquisitions of the window, up to the targets (the projected renewals: 7.2)
   B6  time series          6.1      the retail-to-subscription universe, by region
   B7  exam and assembly    7.1-7.3  the exam (the band), the forecast in money, the total
   B8  output and control   8.1-8.6  core, audit, Power BI, validation, report: no number changes

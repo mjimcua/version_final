@@ -435,6 +435,70 @@ def draw_maturation_explained(explained: dict, threshold_pp: float, path: str) -
     return save(figure, path, top=0.90 if len(states) > 1 else 0.84)
 
 
+# ─── 05.1 · the acquisitions month by month: in total and by term ───
+TERM_COLOURS = {1: BLUE, 2: AQUA, 3: VIOLET}
+KIND_STYLE = {"real": "-", "estimado": ":", "simulado": "--"}
+
+
+def draw_kinds(axis, positions: np.ndarray, values: np.ndarray, kinds: np.ndarray, colour: str, label: str) -> None:
+    """One line whose pieces take the style of their kind (real solid, estimated dotted, simulated dashed); every piece
+    starts at the last point of the one before, so the line has no gaps."""
+    start = 0
+    for end in range(1, len(kinds) + 1):
+        if end == len(kinds) or kinds[end] != kinds[start]:
+            piece = slice(max(start - 1, 0), end)
+            axis.plot(positions[piece], values[piece], color=colour, linewidth=2 if kinds[start] == "real" else 1.8,
+                      linestyle=KIND_STYLE.get(kinds[start], "-"), label=label if start == 0 else None)
+            start = end
+
+
+def draw_acquisitions_by_month(months: pd.DataFrame, current, target_usd, path: str) -> str:
+    """Top: the acquisitions of every month (every term together), the total of every year written over it. Bottom: the
+    same, one line per term. Solid: sold (read in the extract); dotted: sold but estimated (its term falls due after
+    the extract); dashed: simulated (current month to December, up to the target when there is one)."""
+    months = months.sort_values(["mes_venta", "plazo"])
+    order = list(dict.fromkeys(months["mes_venta"]))
+    positions = np.arange(len(order))
+    total = months.groupby("mes_venta", sort=False)["usd"].sum().reindex(order)
+    kind_of_month = months.groupby("mes_venta", sort=False)["tipo"].agg(
+        lambda kinds: "simulado" if (kinds == "simulado").any() else "estimado" if (kinds == "estimado").any() else "real").reindex(order)
+    figure, axes = new_figure(14, 8.5, 2, 1, sharex=True)
+    draw_kinds(axes[0], positions, total.to_numpy(dtype=float), kind_of_month.to_numpy(), INK, "todos los plazos")
+    axes[0].set_ylim(bottom=0)
+    top = float(total.max()) if len(total) else 0.0
+    for year in sorted({month.year for month in order}):
+        in_year = [index for index, month in enumerate(order) if month.year == year]
+        year_total = float(total.iloc[in_year].sum())
+        sold = float(total.iloc[[index for index in in_year if order[index] < current]].sum())
+        text = f"{year}: {money_label(year_total)}"
+        if any(order[index] >= current for index in in_year):
+            text = f"{year}: {money_label(sold)} vendido + {money_label(year_total - sold)} simulado = {money_label(year_total)}"
+            if target_usd:
+                text += f"\nobjetivo del equipo de adquisición: {money_label(target_usd)}"
+        axes[0].annotate(text, (np.mean(in_year), top * 1.02), ha="center", va="bottom", fontsize=8.5, color=INK_SECONDARY)
+        axes[0].axvline(in_year[0] - 0.5, color=GRID, linewidth=1)
+    axes[0].set_ylim(0, top * 1.25 if top > 0 else 1)
+    axes[0].yaxis.set_major_formatter(lambda value, _: money_label(value))
+    axes[0].set_title("todos los plazos (1, 2 y 3 años), USD por mes de venta", fontsize=10, color=INK, loc="left")
+    for term, by_term in months.groupby("plazo"):
+        by_term = by_term.set_index("mes_venta").reindex(order)
+        draw_kinds(axes[1], positions, by_term["usd"].fillna(0.0).to_numpy(dtype=float), by_term["tipo"].fillna("real").to_numpy(),
+                   TERM_COLOURS.get(int(term), INK_MUTED), f"{int(term)} {'año' if int(term) == 1 else 'años'}")
+    axes[1].set_ylim(bottom=0)
+    axes[1].yaxis.set_major_formatter(lambda value, _: money_label(value))
+    axes[1].set_title("por plazo", fontsize=10, color=INK, loc="left")
+    axes[1].legend(fontsize=8.5, frameon=False, loc="upper left", ncol=3)
+    step = 3
+    axes[1].set_xticks(positions[::step])
+    axes[1].set_xticklabels([str(month) for month in order][::step], rotation=60, fontsize=8)
+    titles(figure, "La adquisición mes a mes: lo vendido y lo que se simula hasta diciembre",
+           "Línea continua: vendido (leído en el extracto). Punteada: vendido pero estimado (su plazo vence después del "
+           "extracto). Discontinua: simulado"
+           + (" hasta el objetivo del equipo de adquisición" if target_usd else "") + ". Solo el plazo de 1 año vence en el "
+           "horizonte; los de 2 y 3 años se cuentan para que el año cuadre.")
+    return save(figure, path, top=0.9)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════════
 # 06-07 · ONE FORECAST SERIES FROM START TO END, AND ITS TECHNIQUES
 # ═══════════════════════════════════════════════════════════════════════════════════

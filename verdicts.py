@@ -558,7 +558,7 @@ def verdict_of_states(tables: dict, configuration: Config) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════════
-# BLOCK 5 · FUTURE PIPELINE
+# BLOCK 5 · ACQUISITION
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def verdict_of_future_pipeline(tables: dict, configuration: Config) -> list:
@@ -836,7 +836,7 @@ VERDICT_OF_BLOCK = {"B1": verdict_of_preparation, "B2": verdict_of_rate, "B3": v
                     "B5": verdict_of_future_pipeline, "B6": verdict_of_time_series, "B7": verdict_of_exam_and_assembly,
                     "B8": verdict_of_output}
 BLOCK_TITLES = {"B1": "PREPARACIÓN: LOS DATOS", "B2": "TASA", "B3": "PRECIO", "B4": "ESTADOS DEL CLIENTE",
-                "B5": "PIPELINE FUTURA", "B6": "TIME SERIES", "B7": "EXAMEN Y MONTAJE", "B8": "SALIDA Y CONTROL"}
+                "B5": "ADQUISICIÓN", "B6": "TIME SERIES", "B7": "EXAMEN Y MONTAJE", "B8": "SALIDA Y CONTROL"}
 
 
 def verdict_of_block(block: str, tables: dict, configuration: Config) -> pd.DataFrame:

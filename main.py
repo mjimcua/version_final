@@ -33,6 +33,10 @@ LOCAL_ENVIRONMENT_REQUIRED = ["SQL_SERVER", "SQL_DATABASE", "SQL_DRIVER", "SQL_S
 PRODUCTION_OUTPUT_FOLDER = "salida"
 PRODUCTION_LOG_FILE = os.path.join(PRODUCTION_OUTPUT_FOLDER, "sff_ejecucion.log")
 PRODUCTION_CURRENT_MONTH = "01/10/2026"          # entorno_local.CURRENT_MONTH, when it is there, replaces it
+# the acquisition team's forecast of 2026 per subregion, in thousands of USD (27-oct-2026): the simulated acquisitions
+# complete the year of every subregion up to it (step 5.1). Its LATAM line (5,861) included Canada; the file has the
+# subregions only, which add up to the 25,000 of the total
+ACQUISITION_TARGETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "objetivos_adquisicion_2026.csv")
 SYNTHETIC_KEYWORD = "sintetico"
 SYNTHETIC_OUTPUT_FOLDER = "salida"
 SYNTHETIC_DATABASE = os.path.join(SYNTHETIC_OUTPUT_FOLDER, "sff_sintetico.db")
@@ -170,6 +174,10 @@ def production_configuration() -> Config:
         uplift_window_months=12,
         uplift_without_increases=True,
         acquisition_discount=0.4,
+        # the acquisition team's targets of the year per subregion: sold + simulated = target (step 5.1)
+        acquisition_targets_file=ACQUISITION_TARGETS_FILE,
+        acquisition_target_column="tr_regional_level_3",
+        acquisition_target_unit_usd=1000.0,
         # the time_series universe (retail to subscription): its region and its projection
         ts_region_columns=["tr_regional_level_1", "tr_regional_level_2", "tr_regional_level_3"],   # projected by country
     )
