@@ -1,0 +1,31 @@
+region,objetivo,region_del_equipo
+DACH,2005,Europe
+UK & Ireland,705,Europe
+Benelux,282,Europe
+Nordics,109,Europe
+Eastern Europe,1015,Europe
+France,1279,Europe
+Iberia,1131,Europe
+Italy,1196,Europe
+Israel,46,Europe
+NWC Africa,362,Europe
+Russia,6040,Russia++
+Belarus,73,Russia++
+Caucasus,13,Russia++
+Stan,168,Russia++
+Brazil,2784,LATAM
+Mexico,1292,LATAM
+NOLA,569,LATAM
+SOLA,666,LATAM
+Canada,549,Canada
+Africa,417,META
+Middle East,526,META
+Saudi Arabia,295,META
+Turkey,582,META
+South East Asia,606,APAC
+AEC,97,APAC
+India,339,APAC
+Greater China,883,APAC
+Korea,50,APAC
+Australia & Oceania,436,APAC
+Japan,484,APAC
